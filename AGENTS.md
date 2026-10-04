@@ -40,3 +40,15 @@ DTOs at API boundary; entities are not API contracts.
 - Integration tests against PostgreSQL/Testcontainers for security, Flyway, locking, transactions and movement posting.
 - Minimum critical tests: refresh rotation/reuse, role+permission checks, warehouse scope 403, concurrent stock decrement, transfer atomicity, movement audit trigger, posted-movement immutability/compensation.
 - Run `./mvnw test` (Windows: `mvnw.cmd test`) before declaring complete.
+
+## Codex specialist delegation
+- The main agent owns implementation, decisions, and final integration. These specialists supplement this contract; existing rules above always win.
+- For small/simple changes, work alone. For a nontrivial task, delegate only when the domain materially applies; use the fewest relevant specialists, never all four by default.
+- Invoke `database_flyway` for schema/migration/SQL/query changes or movement-ledger/trigger questions.
+- Invoke `security_auth` for authentication, tokens, authorization/scopes, 401/403, or secret/logging changes.
+- Invoke `integration_concurrency` for PostgreSQL behavior tests, reproduction, locking/races, atomic transfers, rollback, or audit verification.
+- Invoke `reviewer_architecture` for a scoped read-only review of nontrivial changes crossing layers or risking business invariants.
+- Give each specialist a bounded question, relevant paths, expected evidence, and explicit file ownership if edits are needed. Specialists investigate by default; reviewer remains read-only.
+- Parallelize only independent investigations or isolated tests. Never overlap file ownership; serialize edits in shared files and tests sharing Maven outputs or a database.
+- Wait for delegated results, inspect all changes, resolve findings, then run the complete `./mvnw test` / `mvnw.cmd test` suite before declaring implementation complete.
+- Agent definitions and usage notes live in `.codex/agents/` and `.codex/README.md`. If delegation is unavailable, main agent performs the same checks itself.

@@ -1,0 +1,9 @@
+spring:
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5434/warehouse}
+    username: ${DB_USERNAME:warehouse}
+    password: ${DB_PASSWORD:warehouse}
+security:
+  jwt:
+    # Local development only. Production requires JWT_SECRET.
+    secret: ${JWT_SECRET:development-only-signing-key-change-before-production-warehouse}

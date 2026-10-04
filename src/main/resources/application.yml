@@ -2,9 +2,11 @@
   application:
     name: warehouse-backend
   datasource:
-    url: ${DB_URL:jdbc:postgresql://localhost:5434/warehouse}
-    username: ${DB_USERNAME:warehouse}
-    password: ${DB_PASSWORD:warehouse}
+    url: ${DB_URL}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+    hikari:
+      connection-init-sql: SET lock_timeout='5s'; SET statement_timeout='30s'
   jpa:
     open-in-view: false
     hibernate:
@@ -27,12 +29,21 @@ security:
     issuer: warehouse-backend
     access-token-ttl: PT45M
     refresh-token-ttl: P7D
+    secret: ${JWT_SECRET}
 
 management:
   endpoints:
     web:
       exposure:
-        include: health,info,flyway
+        include: health,info,metrics
   endpoint:
     health:
       show-details: when_authorized
+
+springdoc:
+  swagger-ui:
+    persist-authorization: false
+    try-it-out-enabled: true
+logging:
+  pattern:
+    console: "%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level [%X{correlationId}] %logger{36} - %msg%n"

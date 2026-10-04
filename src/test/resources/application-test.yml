@@ -1,0 +1,6 @@
+security:
+  jwt:
+    secret: integration-test-signing-key-for-isolated-postgresql-only
+logging:
+  level:
+    org.testcontainers: INFO
