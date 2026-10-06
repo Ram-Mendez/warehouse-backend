@@ -19,7 +19,7 @@ public final class ContactDtos {
             @NotBlank @Size(max = 160) String name,
             @NotBlank @Email @Size(max = 255) String email,
             @NotBlank @Size(max = 200) String subject,
-            @NotBlank @Size(min = 10, max = 10000) String message) {
+            @NotBlank @Size(min = 11, max = 10000) String message) {
         @Override
         public String toString() {
             return "ContactInput[redacted]";
