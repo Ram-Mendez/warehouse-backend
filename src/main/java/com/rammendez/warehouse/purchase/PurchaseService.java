@@ -146,7 +146,8 @@ public class PurchaseService {
     public PurchaseDtos.Response cancel(UUID id) {
         var purchase = lockPurchaseOrderAndRequireWarehouseWriteScope(id);
         if (purchase.status() != PurchaseStatus.DRAFT
-                && purchase.status() != PurchaseStatus.SUBMITTED) {
+                && purchase.status() != PurchaseStatus.SUBMITTED
+                && purchase.status() != PurchaseStatus.APPROVED) {
             throw BusinessException.conflict(
                     "Purchase cannot be cancelled after receipt or cancellation");
         }

@@ -83,7 +83,7 @@ public class ProductQueryRepository {
                             + " ps.supplier_id=:supplier)");
             params.put("supplier", supplierId);
         }
-        if (Boolean.TRUE.equals(active)) {
+        if (active != null) {
             where.append(" and p.active=:active");
             params.put("active", active);
         }

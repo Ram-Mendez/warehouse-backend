@@ -114,7 +114,7 @@ public class WarehouseRepository {
                         LOCATION,
                         warehouseId,
                         size,
-                        page),
+                        offset),
                 jdbc.queryForObject(
                         "select count(*) from warehouse_location where warehouse_id=?",
                         Long.class,

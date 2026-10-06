@@ -15,7 +15,7 @@ public class SupplierRepository {
                             r.getString("code"),
                             r.getString("name"),
                             r.getString("email"),
-                            r.getString("email"),
+                            r.getString("phone"),
                             r.getBoolean("active"));
 
     public SupplierRepository(JdbcTemplate jdbc) {
