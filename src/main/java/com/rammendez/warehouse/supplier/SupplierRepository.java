@@ -22,12 +22,12 @@ public class SupplierRepository {
         this.jdbc = jdbc;
     }
 
-    public SupplierDtos.Response get(long id) {
-        return Sql.one(jdbc.query("select * from supplier where id=?", ROW, id), "Supplier");
+    public SupplierDtos.Response getSupplier(long id) {
+        return Sql.firstRowOrThrowNotFound(jdbc.query("select * from supplier where id=?", ROW, id), "Supplier");
     }
 
     public PageResponse<SupplierDtos.Response> list(int page, int size) {
-        int offset = PageResponse.offset(page, size);
+        int offset = PageResponse.validatePageBoundsAndCalculateOffset(page, size);
         return new PageResponse<>(
                 jdbc.query(
                         "select * from supplier order by id limit ? offset ?", ROW, size, offset),

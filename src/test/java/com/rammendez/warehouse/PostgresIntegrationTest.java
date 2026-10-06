@@ -39,7 +39,7 @@ abstract class PostgresIntegrationTest {
     static final String PASSWORD_HASH = new BCryptPasswordEncoder(12).encode(PASSWORD);
 
     @DynamicPropertySource
-    static void database(DynamicPropertyRegistry registry) {
+    static void registerPostgresContainerConnectionProperties(DynamicPropertyRegistry registry) {
         registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
         registry.add("spring.datasource.username", POSTGRES::getUsername);
         registry.add("spring.datasource.password", POSTGRES::getPassword);
@@ -61,12 +61,12 @@ abstract class PostgresIntegrationTest {
     String adminName, workerName, managerName, admin, worker, manager, suffix;
 
     @BeforeEach
-    void fixture() throws Exception {
+    void createCatalogWarehousesUsersScopesAndLoginTokens() throws Exception {
         suffix = UUID.randomUUID().toString();
-        north = warehouse("N-" + suffix);
-        south = warehouse("S-" + suffix);
-        northLocation = location(north);
-        southLocation = location(south);
+        north = insertFixtureWarehouse("N-" + suffix);
+        south = insertFixtureWarehouse("S-" + suffix);
+        northLocation = insertDefaultFixtureWarehouseLocation(north);
+        southLocation = insertDefaultFixtureWarehouseLocation(south);
         category =
                 jdbc.queryForObject(
                         "insert into category(code,name) values (?,?) returning id",
@@ -90,27 +90,27 @@ abstract class PostgresIntegrationTest {
         adminName = "admin-" + suffix;
         workerName = "worker-" + suffix;
         managerName = "manager-" + suffix;
-        adminId = user(adminName, "ROLE_ADMIN");
-        workerId = user(workerName, "ROLE_OPERATOR");
-        managerId = user(managerName, "ROLE_MANAGER");
-        scope(adminId, north, "MANAGER");
-        scope(adminId, south, "MANAGER");
-        scope(managerId, north, "MANAGER");
-        scope(managerId, south, "MANAGER");
-        scope(workerId, north, "OPERATOR");
-        admin = login(adminName).path("accessToken").asText();
-        worker = login(workerName).path("accessToken").asText();
-        manager = login(managerName).path("accessToken").asText();
+        adminId = insertFixtureUserWithRole(adminName, "ROLE_ADMIN");
+        workerId = insertFixtureUserWithRole(workerName, "ROLE_OPERATOR");
+        managerId = insertFixtureUserWithRole(managerName, "ROLE_MANAGER");
+        grantFixtureUserWarehouseScope(adminId, north, "MANAGER");
+        grantFixtureUserWarehouseScope(adminId, south, "MANAGER");
+        grantFixtureUserWarehouseScope(managerId, north, "MANAGER");
+        grantFixtureUserWarehouseScope(managerId, south, "MANAGER");
+        grantFixtureUserWarehouseScope(workerId, north, "OPERATOR");
+        admin = loginFixtureUserAndReturnTokens(adminName).path("accessToken").asText();
+        worker = loginFixtureUserAndReturnTokens(workerName).path("accessToken").asText();
+        manager = loginFixtureUserAndReturnTokens(managerName).path("accessToken").asText();
     }
 
-    long warehouse(String code) {
+    long insertFixtureWarehouse(String code) {
         return jdbc.queryForObject(
                 "insert into warehouse(code,name) values (?,'Fixture warehouse') returning id",
                 Long.class,
                 code);
     }
 
-    long location(long warehouse) {
+    long insertDefaultFixtureWarehouseLocation(long warehouse) {
         return jdbc.queryForObject(
                 "insert into warehouse_location(warehouse_id,code) values (?,'DEFAULT') returning"
                         + " id",
@@ -118,7 +118,7 @@ abstract class PostgresIntegrationTest {
                 warehouse);
     }
 
-    long user(String username, String role) {
+    long insertFixtureUserWithRole(String username, String role) {
         long id =
                 jdbc.queryForObject(
                         "insert into security_user(username,email,password_hash) values (?,?,?)"
@@ -135,7 +135,7 @@ abstract class PostgresIntegrationTest {
         return id;
     }
 
-    void scope(long user, long warehouse, String role) {
+    void grantFixtureUserWarehouseScope(long user, long warehouse, String role) {
         jdbc.update(
                 "insert into security_user_warehouse_scope(user_id,warehouse_id,scope_role) values"
                         + " (?,?,?)",
@@ -144,9 +144,9 @@ abstract class PostgresIntegrationTest {
                 role);
     }
 
-    JsonNode login(String username) throws Exception {
-        return json(
-                call(
+    JsonNode loginFixtureUserAndReturnTokens(String username) throws Exception {
+        return parseHttpResponseJson(
+                executeHttpRequestAndAssertStatus(
                         "POST",
                         "/api/v1/auth/login",
                         null,
@@ -154,7 +154,7 @@ abstract class PostgresIntegrationTest {
                         200));
     }
 
-    MvcResult call(String method, String path, String token, Object body, int status)
+    MvcResult executeHttpRequestAndAssertStatus(String method, String path, String token, Object body, int status)
             throws Exception {
         var builder =
                 MockMvcRequestBuilders.request(
@@ -173,11 +173,11 @@ abstract class PostgresIntegrationTest {
         return result;
     }
 
-    JsonNode json(MvcResult result) throws Exception {
+    JsonNode parseHttpResponseJson(MvcResult result) throws Exception {
         return mapper.readTree(result.getResponse().getContentAsString());
     }
 
-    Map<String, Object> stock(long warehouse, BigDecimal quantity) {
+    Map<String, Object> createStockMovementRequestBody(long warehouse, BigDecimal quantity) {
         return Map.of(
                 "warehouseId",
                 warehouse,
@@ -189,7 +189,7 @@ abstract class PostgresIntegrationTest {
                 "Integration stock operation");
     }
 
-    Map<String, Object> transfer(BigDecimal quantity) {
+    Map<String, Object> createNorthToSouthTransferRequestBody(BigDecimal quantity) {
         return Map.of(
                 "sourceWarehouseId",
                 north,
@@ -203,11 +203,11 @@ abstract class PostgresIntegrationTest {
                 "Integration transfer");
     }
 
-    JsonNode receipt(BigDecimal quantity) throws Exception {
-        return json(call("POST", "/api/v1/movements/receipt", admin, stock(north, quantity), 201));
+    JsonNode postNorthWarehouseReceiptAndReturnMovement(BigDecimal quantity) throws Exception {
+        return parseHttpResponseJson(executeHttpRequestAndAssertStatus("POST", "/api/v1/movements/receipt", admin, createStockMovementRequestBody(north, quantity), 201));
     }
 
-    BigDecimal balance(long warehouse) {
+    BigDecimal getFixtureProductTotalStockInWarehouse(long warehouse) {
         return jdbc.queryForObject(
                 "select coalesce(sum(b.quantity),0) from inventory_balance b join"
                     + " warehouse_location l on l.id=b.warehouse_location_id where b.product_id=?"
@@ -217,7 +217,24 @@ abstract class PostgresIntegrationTest {
                 warehouse);
     }
 
-    Map<String, Object> productInput(String sku, String name) {
+    void awaitBlockedDatabaseStatements(String table, int expected) throws InterruptedException {
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(3);
+        int blocked;
+        do {
+            blocked = jdbc.queryForObject(
+                    "select count(*) from pg_stat_activity where datname=current_database()"
+                            + " and pid<>pg_backend_pid() and state='active'"
+                            + " and wait_event_type='Lock' and query like ?",
+                    Integer.class, "%" + table + "%");
+            if (blocked == expected) {
+                return;
+            }
+            Thread.sleep(20);
+        } while (System.nanoTime() < deadline);
+        assertThat(blocked).as("Blocked " + table + " statements").isEqualTo(expected);
+    }
+
+    Map<String, Object> createProductWithSupplierRequestBody(String sku, String name) {
         return Map.of(
                 "sku",
                 sku,

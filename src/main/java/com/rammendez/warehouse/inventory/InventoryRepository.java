@@ -30,7 +30,7 @@ public class InventoryRepository {
         this.named = named;
     }
 
-    public void ensure(long productId, long locationId) {
+    public void createInventoryBalanceIfMissing(long productId, long locationId) {
         jdbc.update(
                 "insert into inventory_balance(product_id,warehouse_location_id) values (?,?) on"
                         + " conflict(product_id,warehouse_location_id) do nothing",
@@ -38,7 +38,7 @@ public class InventoryRepository {
                 locationId);
     }
 
-    public BigDecimal lockAvailable(long productId, long locationId) {
+    public BigDecimal lockInventoryBalanceAndGetAvailableQuantity(long productId, long locationId) {
         return jdbc.queryForObject(
                 "select quantity-reserved_quantity from inventory_balance where product_id=? and"
                         + " warehouse_location_id=? for update",
@@ -47,7 +47,7 @@ public class InventoryRepository {
                 locationId);
     }
 
-    public void change(long productId, long locationId, BigDecimal delta) {
+    public void applyQuantityDeltaAndAdvanceBalanceVersion(long productId, long locationId, BigDecimal delta) {
         jdbc.update(
                 "update inventory_balance set"
                     + " quantity=quantity+?,version=version+1,updated_at=now() where product_id=?"
@@ -57,7 +57,7 @@ public class InventoryRepository {
                 locationId);
     }
 
-    public InventoryService.Stock stock(long warehouseId, long productId) {
+    public InventoryService.Stock sumProductStockAcrossWarehouseLocations(long warehouseId, long productId) {
         return jdbc.queryForObject(
                 "select coalesce(sum(b.quantity),0) quantity,coalesce(sum(b.reserved_quantity),0)"
                         + " reserved from inventory_balance b join warehouse_location l on"
@@ -73,15 +73,18 @@ public class InventoryRepository {
                 productId);
     }
 
-    public PageResponse<Balance> list(
+    public PageResponse<Balance> listInventoryBalancesWithinUserScope(
             long userId, Long warehouseId, Long productId, int page, int size) {
-        int offset = PageResponse.offset(page, size);
+        int offset = PageResponse.validatePageBoundsAndCalculateOffset(page, size);
         var params = new HashMap<String, Object>();
         params.put("user", userId);
         String where =
                 " from inventory_balance b join warehouse_location l on"
-                        + " l.id=b.warehouse_location_id join security_user_warehouse_scope s on"
-                        + " s.warehouse_id=l.warehouse_id where s.user_id=:user";
+                        + " l.id=b.warehouse_location_id"
+                        + " where exists(select 1 from security_user_warehouse_scope s"
+                        + " where s.warehouse_id=l.warehouse_id"
+                        + " and s.user_id=:user)";
+
         if (warehouseId != null) {
             where += " and l.warehouse_id=:warehouse";
             params.put("warehouse", warehouseId);
@@ -110,7 +113,7 @@ public class InventoryRepository {
                                         r.getBigDecimal("quantity")
                                                 .subtract(r.getBigDecimal("reserved_quantity")),
                                         r.getLong("version"),
-                                        Sql.instant(r, "updated_at")));
+                                        Sql.readNullableInstant(r, "updated_at")));
         return new PageResponse<>(content, count, page, size);
     }
 }

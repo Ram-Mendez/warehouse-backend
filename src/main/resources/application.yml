@@ -41,6 +41,8 @@ management:
       show-details: when_authorized
 
 springdoc:
+  # Include package and enclosing DTO names to distinguish nested Input/Response records.
+  use-fqn: true
   swagger-ui:
     persist-authorization: false
     try-it-out-enabled: true

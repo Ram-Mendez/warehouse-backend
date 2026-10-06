@@ -24,8 +24,8 @@ public class CategoryController {
     }
 
     @GetMapping("/{id}")
-    public CategoryDtos.Response get(@PathVariable long id) {
-        return service.get(id);
+    public CategoryDtos.Response getCategory(@PathVariable long id) {
+        return service.getCategory(id);
     }
 
     @PostMapping

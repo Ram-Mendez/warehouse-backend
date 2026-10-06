@@ -44,37 +44,37 @@ public class PurchaseService {
     @Transactional
     @PreAuthorize("hasAuthority('PERM_PURCHASE_CREATE')")
     public PurchaseDtos.Response create(PurchaseDtos.Input input) {
-        access.warehouse(input.warehouseId(), true);
-        if (!warehouses.get(input.warehouseId()).active()
-                || !suppliers.get(input.supplierId()).active()) {
+        access.requireWarehouseScope(input.warehouseId(), true);
+        if (!warehouses.getWarehouse(input.warehouseId()).active()
+                || !suppliers.getSupplier(input.supplierId()).active()) {
             throw BusinessException.conflict("Warehouse and supplier must be active");
         }
-        UUID id = repository.insert(input, access.userId());
-        audit.event("PURCHASE_CREATED", "purchase_order", id);
-        return repository.get(id, false);
+        UUID id = repository.insertDraftPurchaseOrder(input, access.getAuthenticatedUserId());
+        audit.recordAuditEventWithActorAndWarehouseReferences("PURCHASE_CREATED", "purchase_order", id);
+        return repository.getPurchaseOrderWithLinesAndOptionalLock(id, false);
     }
 
     @PreAuthorize("hasAuthority('PERM_PURCHASE_READ')")
-    public PurchaseDtos.Response get(UUID id) {
-        var purchase = repository.get(id, false);
-        access.warehouse(purchase.warehouseId(), false);
+    public PurchaseDtos.Response getPurchaseOrderWithLines(UUID id) {
+        var purchase = repository.getPurchaseOrderWithLinesAndOptionalLock(id, false);
+        access.requireWarehouseScope(purchase.warehouseId(), false);
         return purchase;
     }
 
     @PreAuthorize("hasAuthority('PERM_PURCHASE_READ')")
-    public PageResponse<PurchaseDtos.Summary> list(
+    public PageResponse<PurchaseDtos.Summary> listPurchaseOrdersWithinUserScope(
             Long warehouseId, PurchaseStatus status, int page, int size) {
         if (warehouseId != null) {
-            access.warehouse(warehouseId, false);
+            access.requireWarehouseScope(warehouseId, false);
         }
-        return repository.list(access.userId(), warehouseId, status, page, size);
+        return repository.listPurchaseOrdersWithinUserScope(access.getAuthenticatedUserId(), warehouseId, status, page, size);
     }
 
     @Transactional
     @PreAuthorize("hasAuthority('PERM_PURCHASE_CREATE')")
     public PurchaseDtos.Response addLine(UUID id, PurchaseDtos.LineInput input) {
-        var purchase = locked(id);
-        require(purchase, PurchaseStatus.DRAFT);
+        var purchase = lockPurchaseOrderAndRequireWarehouseWriteScope(id);
+        requirePurchaseOrderStatus(purchase, PurchaseStatus.DRAFT);
         if (purchase.lines().size() >= 100) {
             throw BusinessException.conflict("At most 100 purchase lines are supported");
         }
@@ -82,36 +82,37 @@ public class PurchaseService {
             throw BusinessException.conflict("Product already has a purchase line");
         }
         products.requireActiveProduct(input.productId());
-        repository.line(id, input);
-        audit.event("PURCHASE_LINE_ADDED", "purchase_order", id);
-        return repository.get(id, false);
+        repository.insertPurchaseOrderLine(id, input);
+        audit.recordAuditEventWithActorAndWarehouseReferences("PURCHASE_LINE_ADDED", "purchase_order", id);
+        return repository.getPurchaseOrderWithLinesAndOptionalLock(id, false);
     }
 
     @Transactional
     @PreAuthorize("hasAuthority('PERM_PURCHASE_CREATE')")
     public PurchaseDtos.Response submit(UUID id) {
-        var purchase = locked(id);
-        require(purchase, PurchaseStatus.DRAFT);
+        var purchase = lockPurchaseOrderAndRequireWarehouseWriteScope(id);
+        requirePurchaseOrderStatus(purchase, PurchaseStatus.DRAFT);
         if (purchase.lines().isEmpty()) {
             throw BusinessException.conflict("Purchase requires at least one line");
         }
-        return transition(id, PurchaseStatus.SUBMITTED);
+        return changePurchaseOrderStatusAndRecordAuditEvent(id, PurchaseStatus.SUBMITTED);
     }
 
     @Transactional
     @PreAuthorize("hasAuthority('PERM_PURCHASE_APPROVE')")
     public PurchaseDtos.Response approve(UUID id) {
-        var purchase = locked(id);
-        require(purchase, PurchaseStatus.SUBMITTED);
-        repository.approve(id, access.userId());
-        audit.event("PURCHASE_APPROVED", "purchase_order", id);
-        return repository.get(id, false);
+        var purchase = lockPurchaseOrderAndRequireWarehouseWriteScope(id);
+        requirePurchaseOrderStatus(purchase, PurchaseStatus.SUBMITTED);
+        repository.markPurchaseOrderApprovedWithActor(id, access.getAuthenticatedUserId());
+        audit.recordAuditEventWithActorAndWarehouseReferences("PURCHASE_APPROVED", "purchase_order", id);
+        return repository.getPurchaseOrderWithLinesAndOptionalLock(id, false);
     }
 
     @Transactional
     @PreAuthorize("hasAuthority('PERM_PURCHASE_RECEIVE')")
-    public PurchaseDtos.Response receive(UUID id) {
-        var purchase = locked(id);
+    public PurchaseDtos.Response receiveAllPurchaseLinesAndMarkOrderReceived(UUID id) {
+        var purchase = repository.getPurchaseOrderWithLinesAndOptionalLock(id, true);
+        access.requireWarehouseScope(purchase.warehouseId(), true);
         if (purchase.status() != PurchaseStatus.SUBMITTED
                 && purchase.status() != PurchaseStatus.APPROVED) {
             throw BusinessException.conflict(
@@ -134,40 +135,40 @@ public class PurchaseService {
                                                 line.orderedQuantity(),
                                                 line.unitCost()))
                         .toList();
-        movements.receivePurchase(id, purchase.warehouseId(), lines);
-        repository.received(id);
-        audit.event("PURCHASE_RECEIVED", "purchase_order", id);
-        return repository.get(id, false);
+        movements.receivePurchaseLinesIntoDefaultLocationAndPostReceipt(id, purchase.warehouseId(), lines);
+        repository.markAllPurchaseLinesAndOrderReceived(id);
+        audit.recordAuditEventWithActorAndWarehouseReferences("PURCHASE_RECEIVED", "purchase_order", id);
+        return repository.getPurchaseOrderWithLinesAndOptionalLock(id, false);
     }
 
     @Transactional
     @PreAuthorize("hasAuthority('PERM_PURCHASE_CREATE')")
     public PurchaseDtos.Response cancel(UUID id) {
-        var purchase = locked(id);
+        var purchase = lockPurchaseOrderAndRequireWarehouseWriteScope(id);
         if (purchase.status() != PurchaseStatus.DRAFT
                 && purchase.status() != PurchaseStatus.SUBMITTED
                 && purchase.status() != PurchaseStatus.APPROVED) {
             throw BusinessException.conflict(
                     "Purchase cannot be cancelled after receipt or cancellation");
         }
-        return transition(id, PurchaseStatus.CANCELLED);
+        return changePurchaseOrderStatusAndRecordAuditEvent(id, PurchaseStatus.CANCELLED);
     }
 
-    private PurchaseDtos.Response locked(UUID id) {
-        var purchase = repository.get(id, true);
-        access.warehouse(purchase.warehouseId(), true);
+    private PurchaseDtos.Response lockPurchaseOrderAndRequireWarehouseWriteScope(UUID id) {
+        var purchase = repository.getPurchaseOrderWithLinesAndOptionalLock(id, true);
+        access.requireWarehouseScope(purchase.warehouseId(), true);
         return purchase;
     }
 
-    private static void require(PurchaseDtos.Response purchase, PurchaseStatus status) {
+    private static void requirePurchaseOrderStatus(PurchaseDtos.Response purchase, PurchaseStatus status) {
         if (purchase.status() != status) {
             throw BusinessException.conflict("Purchase must be " + status);
         }
     }
 
-    private PurchaseDtos.Response transition(UUID id, PurchaseStatus status) {
-        repository.status(id, status);
-        audit.event("PURCHASE_" + status, "purchase_order", id);
-        return repository.get(id, false);
+    private PurchaseDtos.Response changePurchaseOrderStatusAndRecordAuditEvent(UUID id, PurchaseStatus status) {
+        repository.updatePurchaseOrderStatusAndAdvanceVersion(id, status);
+        audit.recordAuditEventWithActorAndWarehouseReferences("PURCHASE_" + status, "purchase_order", id);
+        return repository.getPurchaseOrderWithLinesAndOptionalLock(id, false);
     }
 }

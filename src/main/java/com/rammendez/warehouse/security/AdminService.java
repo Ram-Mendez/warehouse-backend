@@ -31,44 +31,44 @@ public class AdminService {
         this.audit = audit;
     }
 
-    public PageResponse<AdminDtos.UserSummary> list(int page, int size) {
-        return repository.list(page, size);
+    public PageResponse<AdminDtos.UserSummary> listUserSummaries(int page, int size) {
+        return repository.listUserSummaries(page, size);
     }
 
-    public AdminDtos.UserResponse get(long id) {
-        return repository.get(id);
+    public AdminDtos.UserResponse getUserWithRolesAndWarehouseScopes(long id) {
+        return repository.getUserWithRolesAndWarehouseScopes(id);
     }
 
-    public List<AdminDtos.Role> roles() {
-        return repository.roles();
+    public List<AdminDtos.Role> listAvailableRoles() {
+        return repository.listAvailableRoles();
     }
 
     @Transactional
     public AdminDtos.UserResponse create(AdminDtos.Create input) {
-        PasswordPolicy.validate(input.password());
-        long id = repository.insert(input, passwords.encode(input.password()));
-        audit.event("USER_CREATED", "security_user", id);
-        return repository.get(id);
+        PasswordPolicy.requirePasswordWithinBcryptByteLimit(input.password());
+        long id = repository.insertUserWithPasswordHash(input, passwords.encode(input.password()));
+        audit.recordAuditEventWithActorAndWarehouseReferences("USER_CREATED", "security_user", id);
+        return repository.getUserWithRolesAndWarehouseScopes(id);
     }
 
     @Transactional
-    public AdminDtos.UserResponse update(long id, AdminDtos.Update input) {
+    public AdminDtos.UserResponse updateUserAndRevokeAuthSessions(long id, AdminDtos.Update input) {
         repository.lockUser(id);
-        repository.get(id);
+        repository.getUserWithRolesAndWarehouseScopes(id);
         if (input.password() != null) {
-            PasswordPolicy.validate(input.password());
+            PasswordPolicy.requirePasswordWithinBcryptByteLimit(input.password());
         }
-        repository.update(
+        repository.updateUserAdvanceAuthVersionAndRevokeSessions(
                 id, input, input.password() == null ? null : passwords.encode(input.password()));
-        audit.event("USER_UPDATED", "security_user", id);
-        return repository.get(id);
+        audit.recordAuditEventWithActorAndWarehouseReferences("USER_UPDATED", "security_user", id);
+        return repository.getUserWithRolesAndWarehouseScopes(id);
     }
 
     @Transactional
-    public AdminDtos.UserResponse roles(long id, AdminDtos.Roles input) {
+    public AdminDtos.UserResponse replaceUserRolesAndRevokeAuthSessions(long id, AdminDtos.Roles input) {
         repository.lockUser(id);
-        repository.get(id);
-        var available = repository.roles();
+        repository.getUserWithRolesAndWarehouseScopes(id);
+        var available = repository.listAvailableRoles();
         var roleIds =
                 input.roles().stream()
                         .map(
@@ -82,22 +82,22 @@ public class AdminService {
                                                                         "Role " + code))
                                                 .id())
                         .toList();
-        repository.roles(id, roleIds);
-        audit.event("USER_ROLES_CHANGED", "security_user", id);
-        return repository.get(id);
+        repository.replaceUserRolesAdvanceAuthVersionAndRevokeSessions(id, roleIds);
+        audit.recordAuditEventWithActorAndWarehouseReferences("USER_ROLES_CHANGED", "security_user", id);
+        return repository.getUserWithRolesAndWarehouseScopes(id);
     }
 
     @Transactional
-    public AdminDtos.UserResponse scopes(long id, AdminDtos.Scopes input) {
+    public AdminDtos.UserResponse replaceUserWarehouseScopes(long id, AdminDtos.Scopes input) {
         repository.lockUser(id);
-        repository.get(id);
+        repository.getUserWithRolesAndWarehouseScopes(id);
         if (input.scopes().stream().map(AdminDtos.Scope::warehouseId).distinct().count()
                 != input.scopes().size()) {
             throw BusinessException.invalid("Duplicate warehouse scope");
         }
-        input.scopes().forEach(scope -> warehouses.get(scope.warehouseId()));
-        repository.scopes(id, input.scopes());
-        audit.event("USER_SCOPES_CHANGED", "security_user", id);
-        return repository.get(id);
+        input.scopes().forEach(scope -> warehouses.getWarehouse(scope.warehouseId()));
+        repository.replaceUserWarehouseScopes(id, input.scopes());
+        audit.recordAuditEventWithActorAndWarehouseReferences("USER_SCOPES_CHANGED", "security_user", id);
+        return repository.getUserWithRolesAndWarehouseScopes(id);
     }
 }

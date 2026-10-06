@@ -20,16 +20,16 @@ public class PurchaseRepository {
                             PurchaseStatus.valueOf(r.getString("status")),
                             r.getLong("created_by"),
                             r.getLong("version"),
-                            Sql.instant(r, "created_at"),
+                            Sql.readNullableInstant(r, "created_at"),
                             List.of());
 
     public PurchaseRepository(JdbcTemplate jdbc) {
         this.jdbc = jdbc;
     }
 
-    public PurchaseDtos.Response get(UUID id, boolean lock) {
+    public PurchaseDtos.Response getPurchaseOrderWithLinesAndOptionalLock(UUID id, boolean lock) {
         var header =
-                Sql.one(
+                Sql.firstRowOrThrowNotFound(
                         jdbc.query(
                                 "select * from purchase_order where id=?"
                                         + (lock ? " for update" : ""),
@@ -59,12 +59,12 @@ public class PurchaseRepository {
                 lines);
     }
 
-    public UUID insert(PurchaseDtos.Input input, long actor) {
+    public UUID insertDraftPurchaseOrder(PurchaseDtos.Input input, long actor) {
         UUID id = UUID.randomUUID();
         jdbc.update(
                 "insert into"
-                    + " purchase_order(id,order_number,supplier_id,target_warehouse_id,status,created_by)"
-                    + " values (?,?,?,?,'DRAFT',?)",
+                        + " purchase_order(id,order_number,supplier_id,target_warehouse_id,status,created_by)"
+                        + " values (?,?,?,?,'DRAFT',?)",
                 id,
                 input.orderNumber().trim(),
                 input.supplierId(),
@@ -73,44 +73,44 @@ public class PurchaseRepository {
         return id;
     }
 
-    public void line(UUID id, PurchaseDtos.LineInput input) {
+    public void insertPurchaseOrderLine(UUID id, PurchaseDtos.LineInput input) {
         jdbc.update(
                 "insert into"
-                    + " purchase_order_line(purchase_order_id,product_id,ordered_quantity,unit_cost)"
-                    + " values (?,?,?,?)",
+                        + " purchase_order_line(purchase_order_id,product_id,ordered_quantity,unit_cost)"
+                        + " values (?,?,?,?)",
                 id,
                 input.productId(),
                 input.quantity(),
                 input.unitCost());
     }
 
-    public void status(UUID id, PurchaseStatus status) {
+    public void updatePurchaseOrderStatusAndAdvanceVersion(UUID id, PurchaseStatus status) {
         jdbc.update(
                 "update purchase_order set status=?,version=version+1 where id=?",
                 status.name(),
                 id);
     }
 
-    public void approve(UUID id, long actor) {
+    public void markPurchaseOrderApprovedWithActor(UUID id, long actor) {
         jdbc.update(
                 "update purchase_order set"
-                    + " status='APPROVED',approved_by=?,approved_at=now(),version=version+1 where"
-                    + " id=?",
+                        + " status='APPROVED',approved_by=?,approved_at=now(),version=version+1 where"
+                        + " id=?",
                 actor,
                 id);
     }
 
-    public void received(UUID id) {
+    public void markAllPurchaseLinesAndOrderReceived(UUID id) {
         jdbc.update(
                 "update purchase_order_line set received_quantity=ordered_quantity where"
                         + " purchase_order_id=?",
                 id);
-        status(id, PurchaseStatus.RECEIVED);
+        updatePurchaseOrderStatusAndAdvanceVersion(id, PurchaseStatus.RECEIVED);
     }
 
-    public PageResponse<PurchaseDtos.Summary> list(
+    public PageResponse<PurchaseDtos.Summary> listPurchaseOrdersWithinUserScope(
             long actor, Long warehouseId, PurchaseStatus status, int page, int size) {
-        int offset = PageResponse.offset(page, size);
+        int offset = PageResponse.validatePageBoundsAndCalculateOffset(page, size);
         String where =
                 " from purchase_order p join security_user_warehouse_scope s on"
                         + " s.warehouse_id=p.target_warehouse_id where s.user_id=?";

@@ -22,26 +22,26 @@ public class AuthRepository {
         this.jdbc = jdbc;
     }
 
-    public UUID session(long userId) {
+    public UUID createAuthSession(long userId) {
         UUID id = UUID.randomUUID();
         jdbc.update("insert into auth_session(id,user_id) values (?,?)", id, userId);
         return id;
     }
 
-    public Session lock(UUID sessionId) {
-        return Sql.one(
+    public Session lockAndGetAuthSession(UUID sessionId) {
+        return Sql.firstRowOrThrowNotFound(
                 jdbc.query(
                         "select * from auth_session where id=? for update",
                         (r, n) ->
                                 new Session(
                                         r.getObject("id", UUID.class),
                                         r.getLong("user_id"),
-                                        Sql.instant(r, "revoked_at")),
+                                        Sql.readNullableInstant(r, "revoked_at")),
                         sessionId),
                 "Session");
     }
 
-    public Optional<RefreshToken> token(String hash) {
+    public Optional<RefreshToken> findRefreshTokenByHash(String hash) {
         return jdbc
                 .query(
                         "select * from auth_refresh_token where token_hash=?",
@@ -49,15 +49,15 @@ public class AuthRepository {
                                 new RefreshToken(
                                         r.getObject("id", UUID.class),
                                         r.getObject("session_id", UUID.class),
-                                        Sql.instant(r, "expires_at"),
-                                        Sql.instant(r, "used_at"),
-                                        Sql.instant(r, "revoked_at")),
+                                        Sql.readNullableInstant(r, "expires_at"),
+                                        Sql.readNullableInstant(r, "used_at"),
+                                        Sql.readNullableInstant(r, "revoked_at")),
                         hash)
                 .stream()
                 .findFirst();
     }
 
-    public void insertToken(UUID sessionId, UUID parentId, String hash, Instant expiry) {
+    public void insertRefreshTokenHash(UUID sessionId, UUID parentId, String hash, Instant expiry) {
         jdbc.update(
                 "insert into"
                         + " auth_refresh_token(id,session_id,parent_token_id,token_hash,expires_at)"
@@ -69,15 +69,15 @@ public class AuthRepository {
                 java.sql.Timestamp.from(expiry));
     }
 
-    public void used(UUID id) {
+    public void markRefreshTokenUsed(UUID id) {
         jdbc.update("update auth_refresh_token set used_at=now() where id=?", id);
     }
 
-    public void seen(UUID id) {
+    public void updateAuthSessionLastSeenAt(UUID id) {
         jdbc.update("update auth_session set last_seen_at=now() where id=?", id);
     }
 
-    public void revoke(UUID id) {
+    public void revokeAuthSessionAndAllRefreshTokens(UUID id) {
         jdbc.update("update auth_session set revoked_at=coalesce(revoked_at,now()) where id=?", id);
         jdbc.update(
                 "update auth_refresh_token set revoked_at=coalesce(revoked_at,now()) where"

@@ -24,18 +24,18 @@ public class AuthController {
 
     @PostMapping("/refresh")
     @SecurityRequirements
-    public AuthDtos.Tokens refresh(@Valid @RequestBody AuthDtos.Refresh input) {
-        return service.refresh(input.refreshToken());
+    public AuthDtos.Tokens rotateRefreshTokenOrRevokeSessionOnReuse(@Valid @RequestBody AuthDtos.Refresh input) {
+        return service.rotateRefreshTokenOrRevokeSessionOnReuse(input.refreshToken());
     }
 
     @PostMapping("/logout")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    public void logout() {
-        service.logout();
+    public void revokeCurrentAuthSessionAndRefreshTokens() {
+        service.revokeCurrentAuthSessionAndRefreshTokens();
     }
 
     @GetMapping("/me")
-    public AuthDtos.Me me() {
-        return service.me();
+    public AuthDtos.Me getCurrentUserProfileRolesAndPermissions() {
+        return service.getCurrentUserProfileRolesAndPermissions();
     }
 }

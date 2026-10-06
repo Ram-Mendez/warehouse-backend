@@ -34,7 +34,7 @@ class DevInitializationIntegrationTest extends PostgresIntegrationTest {
                                 "worker",
                                 "Worker-local-2026!")
                         .entrySet()) {
-            call(
+            executeHttpRequestAndAssertStatus(
                     "POST",
                     "/api/v1/auth/login",
                     null,

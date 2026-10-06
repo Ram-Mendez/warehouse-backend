@@ -25,17 +25,17 @@ public class PurchaseController {
     }
 
     @GetMapping
-    public PageResponse<PurchaseDtos.Summary> list(
+    public PageResponse<PurchaseDtos.Summary> listPurchaseOrdersWithinUserScope(
             @RequestParam(required = false) Long warehouseId,
             @RequestParam(required = false) PurchaseStatus status,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
-        return service.list(warehouseId, status, page, size);
+        return service.listPurchaseOrdersWithinUserScope(warehouseId, status, page, size);
     }
 
     @GetMapping("/{id}")
-    public PurchaseDtos.Response get(@PathVariable UUID id) {
-        return service.get(id);
+    public PurchaseDtos.Response getPurchaseOrderWithLines(@PathVariable UUID id) {
+        return service.getPurchaseOrderWithLines(id);
     }
 
     @PostMapping("/{id}/lines")
@@ -55,8 +55,8 @@ public class PurchaseController {
     }
 
     @PostMapping("/{id}/receive")
-    public PurchaseDtos.Response receive(@PathVariable UUID id) {
-        return service.receive(id);
+    public PurchaseDtos.Response receiveAllPurchaseLinesAndMarkOrderReceived(@PathVariable UUID id) {
+        return service.receiveAllPurchaseLinesAndMarkOrderReceived(id);
     }
 
     @PostMapping("/{id}/cancel")

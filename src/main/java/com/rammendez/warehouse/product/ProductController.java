@@ -17,7 +17,7 @@ public class ProductController {
     }
 
     @GetMapping
-    public PageResponse<ProductDtos.Response> list(
+    public PageResponse<ProductDtos.Response> listFilteredAndSortedProducts(
             @RequestParam(required = false) String search,
             @RequestParam(required = false) String sku,
             @RequestParam(required = false) Long categoryId,
@@ -26,20 +26,20 @@ public class ProductController {
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size,
             @RequestParam(defaultValue = "id") String sort) {
-        return service.list(search, sku, categoryId, supplierId, active, page, size, sort);
+        return service.listFilteredAndSortedProducts(search, sku, categoryId, supplierId, active, page, size, sort);
     }
 
     @GetMapping("/{id}")
-    public ProductDtos.Response get(@PathVariable long id) {
-        return service.get(id);
+    public ProductDtos.Response getProduct(@PathVariable long id) {
+        return service.getProduct(id);
     }
 
     @GetMapping("/{id}/suppliers")
-    public PageResponse<ProductDtos.SupplierLink> suppliers(
+    public PageResponse<ProductDtos.SupplierLink> listProductSupplierLinks(
             @PathVariable long id,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
-        return service.suppliers(id, page, size);
+        return service.listProductSupplierLinks(id, page, size);
     }
 
     @PostMapping
@@ -49,8 +49,8 @@ public class ProductController {
     }
 
     @PutMapping("/{id}")
-    public ProductDtos.Response update(
+    public ProductDtos.Response updateProductWithRequiredCurrentVersion(
             @PathVariable long id, @Valid @RequestBody ProductDtos.Input input) {
-        return service.update(id, input);
+        return service.updateProductWithRequiredCurrentVersion(id, input);
     }
 }

@@ -20,53 +20,53 @@ public class MovementController {
 
     @PostMapping("/movements/receipt")
     @ResponseStatus(HttpStatus.CREATED)
-    public MovementDtos.Response receipt(@Valid @RequestBody MovementDtos.StockInput input) {
-        return service.receipt(input);
+    public MovementDtos.Response receiveStockAndPostReceiptMovement(@Valid @RequestBody MovementDtos.StockInput input) {
+        return service.receiveStockAndPostReceiptMovement(input);
     }
 
     @PostMapping("/movements/issue")
     @ResponseStatus(HttpStatus.CREATED)
-    public MovementDtos.Response issue(@Valid @RequestBody MovementDtos.StockInput input) {
-        return service.issue(input);
+    public MovementDtos.Response issueAvailableStockAndPostIssueMovement(@Valid @RequestBody MovementDtos.StockInput input) {
+        return service.issueAvailableStockAndPostIssueMovement(input);
     }
 
     @PostMapping("/movements/return")
     @ResponseStatus(HttpStatus.CREATED)
-    public MovementDtos.Response returned(@Valid @RequestBody MovementDtos.StockInput input) {
-        return service.returned(input);
+    public MovementDtos.Response returnStockAndPostReturnMovement(@Valid @RequestBody MovementDtos.StockInput input) {
+        return service.returnStockAndPostReturnMovement(input);
     }
 
     @PostMapping("/movements/adjustment")
     @ResponseStatus(HttpStatus.CREATED)
-    public MovementDtos.Response adjustment(@Valid @RequestBody MovementDtos.Adjustment input) {
-        return service.adjustment(input);
+    public MovementDtos.Response applySignedStockAdjustmentAndPostMovement(@Valid @RequestBody MovementDtos.Adjustment input) {
+        return service.applySignedStockAdjustmentAndPostMovement(input);
     }
 
     @PostMapping("/transfers")
     @ResponseStatus(HttpStatus.CREATED)
-    public MovementDtos.Result transfer(@Valid @RequestBody MovementDtos.Transfer input) {
-        return service.transfer(input);
+    public MovementDtos.Result transferStockAndPostLinkedMovementsAtomically(@Valid @RequestBody MovementDtos.Transfer input) {
+        return service.transferStockAndPostLinkedMovementsAtomically(input);
     }
 
     @PostMapping("/movements/{id}/compensate")
     @ResponseStatus(HttpStatus.CREATED)
-    public MovementDtos.Result compensate(
+    public MovementDtos.Result reversePostedMovementOrTransferWithCompensatingMovements(
             @PathVariable UUID id, @Valid @RequestBody MovementDtos.Compensation input) {
-        return service.compensate(id, input.reason());
+        return service.reversePostedMovementOrTransferWithCompensatingMovements(id, input.reason());
     }
 
     @GetMapping("/movements/{id}")
-    public MovementDtos.Response get(@PathVariable UUID id) {
-        return service.get(id);
+    public MovementDtos.Response getStockMovementWithLines(@PathVariable UUID id) {
+        return service.getStockMovementWithLines(id);
     }
 
     @GetMapping("/movements")
-    public PageResponse<MovementDtos.Response> list(
+    public PageResponse<MovementDtos.Response> listStockMovementsWithinUserScope(
             @RequestParam(required = false) Long warehouseId,
             @RequestParam(required = false) Long productId,
             @RequestParam(required = false) MovementType type,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
-        return service.list(warehouseId, productId, type, page, size);
+        return service.listStockMovementsWithinUserScope(warehouseId, productId, type, page, size);
     }
 }

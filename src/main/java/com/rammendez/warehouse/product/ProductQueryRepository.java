@@ -15,8 +15,8 @@ public class ProductQueryRepository {
         this.jdbc = jdbc;
     }
 
-    public PageResponse<ProductDtos.SupplierLink> suppliers(long productId, int page, int size) {
-        int offset = PageResponse.offset(page, size);
+    public PageResponse<ProductDtos.SupplierLink> listProductSupplierLinks(long productId, int page, int size) {
+        int offset = PageResponse.validatePageBoundsAndCalculateOffset(page, size);
         var params = java.util.Map.of("product", productId, "size", size, "offset", offset);
         String from =
                 " from product_supplier ps join supplier s on s.id=ps.supplier_id where"
@@ -39,7 +39,7 @@ public class ProductQueryRepository {
         return new PageResponse<>(content, count, page, size);
     }
 
-    public PageResponse<ProductDtos.Response> list(
+    public PageResponse<ProductDtos.Response> listFilteredAndSortedProducts(
             String search,
             String sku,
             Long categoryId,
@@ -48,7 +48,7 @@ public class ProductQueryRepository {
             int page,
             int size,
             String sort) {
-        int offset = PageResponse.offset(page, size);
+        int offset = PageResponse.validatePageBoundsAndCalculateOffset(page, size);
         String order =
                 switch (sort) {
                     case "name" -> "p.name,p.id";
@@ -65,7 +65,9 @@ public class ProductQueryRepository {
             where.append(
                     " and (lower(p.name) like :search escape '\\' or lower(p.sku) like :search"
                             + " escape '\\')");
-            params.put("search", Sql.literalLike(search.toLowerCase(java.util.Locale.ROOT)));
+            params.put(
+                    "search",
+                    Sql.createEscapedContainsLikePattern(search.toLowerCase(java.util.Locale.ROOT)));
         }
         if (sku != null) {
             where.append(" and p.sku=:sku");
@@ -104,12 +106,12 @@ public class ProductQueryRepository {
                                         r.getBigDecimal("minimum_stock"),
                                         r.getBoolean("active"),
                                         r.getLong("version"),
-                                        Sql.instant(r, "created_at"),
-                                        Sql.instant(r, "updated_at")));
+                                        Sql.readNullableInstant(r, "created_at"),
+                                        Sql.readNullableInstant(r, "updated_at")));
         return new PageResponse<>(content, count, page, size);
     }
 
-    public void supplier(long productId, Long supplierId, java.math.BigDecimal cost) {
+    public void upsertProductSupplierCostIfSupplierProvided(long productId, Long supplierId, java.math.BigDecimal cost) {
         if (supplierId != null) {
             jdbc.update(
                     "insert into product_supplier(product_id,supplier_id,unit_cost,preferred)"

@@ -43,7 +43,7 @@ public class OpenApiConfig {
                                                                                   + " content are"
                                                                                   + " never logged."
                                                                             : "Requires "
-                                                                                    + permission(
+                                                                                    + describeRequiredPermissionForEndpoint(
                                                                                             path,
                                                                                             method)
                                                                                     + ". Warehouse"
@@ -135,7 +135,7 @@ public class OpenApiConfig {
                                                         }));
     }
 
-    private String permission(String path, PathItem.HttpMethod method) {
+    private String describeRequiredPermissionForEndpoint(String path, PathItem.HttpMethod method) {
         boolean read = method == PathItem.HttpMethod.GET;
         if (path.contains("/auth/")) {
             return "a valid access JWT";

@@ -7,7 +7,7 @@ import org.junit.jupiter.api.Test;
 class WarehouseBackendApplicationTests extends PostgresIntegrationTest {
 
     @Test
-    void contextLoads() {
+    void flywayAppliesVersionSixAndCreatesTwentyThreeBusinessTables() {
         assertThat(
                         jdbc.queryForObject(
                                 "select max(version::int) from flyway_schema_history where success",

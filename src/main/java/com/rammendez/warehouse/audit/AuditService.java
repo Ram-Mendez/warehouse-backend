@@ -16,17 +16,17 @@ public class AuditService {
         this.access = access;
     }
 
-    public void actor() {
+    public void setTransactionLocalAuthenticatedAuditActor() {
         if (!TransactionSynchronizationManager.isActualTransactionActive()) {
             throw new IllegalStateException("Audit actor requires transaction");
         }
         jdbc.queryForObject(
                 "select set_config('app.current_user_id',?,true)",
                 String.class,
-                Long.toString(access.userId()));
+                Long.toString(access.getAuthenticatedUserId()));
     }
 
-    public void event(String type, String entity, Object id) {
+    public void recordAuditEventWithActorAndWarehouseReferences(String type, String entity, Object id) {
         Long warehouse = null;
         Long related = null;
         switch (entity) {
@@ -67,7 +67,7 @@ public class AuditService {
                 "insert into"
                     + " audit_event(actor_user_id,event_type,entity_type,entity_id,warehouse_id,related_warehouse_id)"
                     + " values (?,?,?,?,?,?)",
-                access.userId(),
+                access.getAuthenticatedUserId(),
                 type,
                 entity,
                 id.toString(),
