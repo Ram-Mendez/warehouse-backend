@@ -59,12 +59,12 @@ public class AuthService {
     }
 
     public AuthDtos.Tokens login(AuthDtos.Login input) {
-        if (!PasswordPolicy.supported(input.password())) {
-            throw unauthorized();
+        if (!PasswordPolicy.isPasswordNonNullAndWithinBcryptByteLimit(input.password())) {
+            throw createInvalidCredentialsOrRefreshTokenException();
         }
         return transaction.execute(
                 status -> {
-                    var account = users.lockByUsername(input.username());
+                    var account = users.findAndLockUserByUsername(input.username());
                     boolean matches =
                             passwords.matches(
                                     input.password(),
@@ -73,30 +73,30 @@ public class AuthService {
                             || account.isEmpty()
                             || !account.get().enabled()
                             || account.get().locked()) {
-                        throw unauthorized();
+                        throw createInvalidCredentialsOrRefreshTokenException();
                     }
                     var user = account.get();
-                    return issue(user, repository.session(user.id()), null);
+                    return issueAccessJwtAndPersistRefreshTokenHash(user, repository.createAuthSession(user.id()), null);
                 });
     }
 
-    public AuthDtos.Tokens refresh(String raw) {
-        String hash = hash(raw);
-        var found = repository.token(hash).orElseThrow(AuthService::unauthorized);
+    public AuthDtos.Tokens rotateRefreshTokenOrRevokeSessionOnReuse(String raw) {
+        String hash = computeRefreshTokenSha256Hash(raw);
+        var found = repository.findRefreshTokenByHash(hash).orElseThrow(AuthService::createInvalidCredentialsOrRefreshTokenException);
         // Failure is returned from the transaction so reuse revocation commits before the 401.
         var tokens =
                 transaction.execute(
                         status -> {
-                            var session = repository.lock(found.sessionId());
+                            var session = repository.lockAndGetAuthSession(found.sessionId());
                             var token =
-                                    repository.token(hash).orElseThrow(AuthService::unauthorized);
+                                    repository.findRefreshTokenByHash(hash).orElseThrow(AuthService::createInvalidCredentialsOrRefreshTokenException);
                             if (token.usedAt() != null) {
-                                repository.revoke(session.id());
+                                repository.revokeAuthSessionAndAllRefreshTokens(session.id());
                                 return null;
                             }
                             var user =
-                                    users.byId(session.userId())
-                                            .orElseThrow(AuthService::unauthorized);
+                                    users.findUserById(session.userId())
+                                            .orElseThrow(AuthService::createInvalidCredentialsOrRefreshTokenException);
                             if (session.revokedAt() != null
                                     || token.revokedAt() != null
                                     || !token.expiresAt().isAfter(Instant.now())
@@ -104,45 +104,45 @@ public class AuthService {
                                     || user.locked()) {
                                 return null;
                             }
-                            repository.used(token.id());
-                            repository.seen(session.id());
-                            return issue(user, session.id(), token.id());
+                            repository.markRefreshTokenUsed(token.id());
+                            repository.updateAuthSessionLastSeenAt(session.id());
+                            return issueAccessJwtAndPersistRefreshTokenHash(user, session.id(), token.id());
                         });
         if (tokens == null) {
-            throw unauthorized();
+            throw createInvalidCredentialsOrRefreshTokenException();
         }
         return tokens;
     }
 
-    public void logout() {
-        UUID sessionId = UUID.fromString(access.jwt().getToken().getClaimAsString("sid"));
+    public void revokeCurrentAuthSessionAndRefreshTokens() {
+        UUID sessionId = UUID.fromString(access.requireJwtAuthentication().getToken().getClaimAsString("sid"));
         transaction.executeWithoutResult(
                 status -> {
-                    var session = repository.lock(sessionId);
-                    if (session.userId() != access.userId()) {
-                        throw unauthorized();
+                    var session = repository.lockAndGetAuthSession(sessionId);
+                    if (session.userId() != access.getAuthenticatedUserId()) {
+                        throw createInvalidCredentialsOrRefreshTokenException();
                     }
-                    repository.revoke(sessionId);
+                    repository.revokeAuthSessionAndAllRefreshTokens(sessionId);
                 });
     }
 
-    public AuthDtos.Me me() {
-        var user = users.byId(access.userId()).orElseThrow(AuthService::unauthorized);
+    public AuthDtos.Me getCurrentUserProfileRolesAndPermissions() {
+        var user = users.findUserById(access.getAuthenticatedUserId()).orElseThrow(AuthService::createInvalidCredentialsOrRefreshTokenException);
         return new AuthDtos.Me(
                 user.id(),
                 user.username(),
                 user.email(),
-                users.roles(user.id()),
-                users.permissions(user.id()));
+                users.findUserRoleCodes(user.id()),
+                users.findUserPermissionCodes(user.id()));
     }
 
-    private AuthDtos.Tokens issue(UserAccount user, UUID sessionId, UUID parentId) {
+    private AuthDtos.Tokens issueAccessJwtAndPersistRefreshTokenHash(UserAccount user, UUID sessionId, UUID parentId) {
         byte[] bytes = new byte[48];
         random.nextBytes(bytes);
         String refresh = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
         Instant now = Instant.now();
         Instant expiry = now.plus(accessTtl);
-        repository.insertToken(sessionId, parentId, hash(refresh), now.plus(refreshTtl));
+        repository.insertRefreshTokenHash(sessionId, parentId, computeRefreshTokenSha256Hash(refresh), now.plus(refreshTtl));
         var claims =
                 JwtClaimsSet.builder()
                         .issuer(issuer)
@@ -152,8 +152,8 @@ public class AuthService {
                         .claim("sid", sessionId.toString())
                         .claim("av", user.authVersion())
                         .claim("username", user.username())
-                        .claim("roles", users.roles(user.id()))
-                        .claim("permissions", users.permissions(user.id()))
+                        .claim("roles", users.findUserRoleCodes(user.id()))
+                        .claim("permissions", users.findUserPermissionCodes(user.id()))
                         .build();
         String jwt =
                 encoder.encode(
@@ -163,7 +163,7 @@ public class AuthService {
         return new AuthDtos.Tokens(jwt, "Bearer", expiry, refresh);
     }
 
-    static String hash(String raw) {
+    static String computeRefreshTokenSha256Hash(String raw) {
         try {
             return HexFormat.of()
                     .formatHex(
@@ -174,7 +174,7 @@ public class AuthService {
         }
     }
 
-    private static BusinessException unauthorized() {
+    private static BusinessException createInvalidCredentialsOrRefreshTokenException() {
         return new BusinessException(
                 HttpStatus.UNAUTHORIZED, "Invalid credentials or refresh token");
     }

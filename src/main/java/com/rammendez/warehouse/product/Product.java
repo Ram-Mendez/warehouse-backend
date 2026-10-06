@@ -49,13 +49,13 @@ public class Product {
     protected Product() {}
 
     @PrePersist
-    void created() {
+    void initializeCreationAndUpdateTimestamps() {
         createdAt = Instant.now();
         updatedAt = createdAt;
     }
 
     @PreUpdate
-    void updated() {
+    void refreshUpdateTimestamp() {
         updatedAt = Instant.now();
     }
 }

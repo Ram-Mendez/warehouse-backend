@@ -23,69 +23,69 @@ public class WarehouseService {
     }
 
     @PreAuthorize("hasAuthority('PERM_WAREHOUSE_READ')")
-    public PageResponse<WarehouseDtos.Response> list(int page, int size) {
-        return repository.list(access.userId(), page, size);
+    public PageResponse<WarehouseDtos.Response> listWarehousesWithinUserScope(int page, int size) {
+        return repository.listWarehousesWithinUserScope(access.getAuthenticatedUserId(), page, size);
     }
 
     @PreAuthorize("hasAuthority('PERM_WAREHOUSE_READ')")
-    public WarehouseDtos.Response get(long id) {
-        access.warehouse(id, false);
-        return repository.get(id);
+    public WarehouseDtos.Response getWarehouse(long id) {
+        access.requireWarehouseScope(id, false);
+        return repository.getWarehouse(id);
     }
 
     @Transactional
     @PreAuthorize("hasAuthority('PERM_WAREHOUSE_MANAGE')")
-    public WarehouseDtos.Response create(WarehouseDtos.Input input) {
+    public WarehouseDtos.Response createWarehouseWithDefaultLocationAndCreatorScope(WarehouseDtos.Input input) {
         long id = repository.insert(input);
         repository.createLocation(
                 id, new WarehouseDtos.LocationInput("DEFAULT", "Default stock location", true));
-        repository.grantCreator(access.userId(), id);
-        audit.event("WAREHOUSE_CREATED", "warehouse", id);
-        return repository.get(id);
+        repository.grantCreatorWarehouseManagerScope(access.getAuthenticatedUserId(), id);
+        audit.recordAuditEventWithActorAndWarehouseReferences("WAREHOUSE_CREATED", "warehouse", id);
+        return repository.getWarehouse(id);
     }
 
     @Transactional
     @PreAuthorize("hasAuthority('PERM_WAREHOUSE_MANAGE')")
     public WarehouseDtos.Response update(long id, WarehouseDtos.Input input) {
-        access.warehouse(id, true);
-        repository.get(id);
+        access.requireWarehouseScope(id, true);
+        repository.getWarehouse(id);
         repository.update(id, input);
-        audit.event("WAREHOUSE_UPDATED", "warehouse", id);
-        return repository.get(id);
+        audit.recordAuditEventWithActorAndWarehouseReferences("WAREHOUSE_UPDATED", "warehouse", id);
+        return repository.getWarehouse(id);
     }
 
     @PreAuthorize("hasAuthority('PERM_WAREHOUSE_READ')")
-    public PageResponse<WarehouseDtos.Location> locations(long warehouseId, int page, int size) {
-        access.warehouse(warehouseId, false);
-        repository.get(warehouseId);
-        return repository.locations(warehouseId, page, size);
+    public PageResponse<WarehouseDtos.Location> listWarehouseLocations(long warehouseId, int page, int size) {
+        access.requireWarehouseScope(warehouseId, false);
+        repository.getWarehouse(warehouseId);
+        return repository.listWarehouseLocations(warehouseId, page, size);
     }
 
     @PreAuthorize("hasAuthority('PERM_WAREHOUSE_READ')")
-    public WarehouseDtos.Location location(long warehouseId, long id) {
-        access.warehouse(warehouseId, false);
-        return repository.location(warehouseId, id);
+    public WarehouseDtos.Location getWarehouseLocation(long warehouseId, long id) {
+        access.requireWarehouseScope(warehouseId, false);
+        return repository.getWarehouseLocation(warehouseId, id);
     }
 
     @Transactional
     @PreAuthorize("hasAuthority('PERM_WAREHOUSE_MANAGE')")
     public WarehouseDtos.Location createLocation(
             long warehouseId, WarehouseDtos.LocationInput input) {
-        access.warehouse(warehouseId, true);
-        repository.get(warehouseId);
+        access.requireWarehouseScope(warehouseId, true);
+        repository.getWarehouse(warehouseId);
         long id = repository.createLocation(warehouseId, input);
-        audit.event("LOCATION_CREATED", "warehouse_location", id);
-        return repository.location(warehouseId, id);
+        audit.recordAuditEventWithActorAndWarehouseReferences("LOCATION_CREATED", "warehouse_location", id);
+        return repository.getWarehouseLocation(warehouseId, id);
     }
 
     @Transactional
     @PreAuthorize("hasAuthority('PERM_WAREHOUSE_MANAGE')")
     public WarehouseDtos.Location updateLocation(
             long warehouseId, long id, WarehouseDtos.LocationInput input) {
-        access.warehouse(warehouseId, true);
-        repository.location(warehouseId, id);
+        access.requireWarehouseScope(warehouseId, true);
+        repository.getWarehouseLocation(warehouseId, id);
         repository.updateLocation(id, input);
-        audit.event("LOCATION_UPDATED", "warehouse_location", id);
-        return repository.location(warehouseId, id);
+        audit.recordAuditEventWithActorAndWarehouseReferences("LOCATION_UPDATED", "warehouse_location", id);
+        return repository.getWarehouseLocation(warehouseId, id);
     }
 }

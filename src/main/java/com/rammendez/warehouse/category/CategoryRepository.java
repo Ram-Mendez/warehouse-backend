@@ -25,12 +25,12 @@ public class CategoryRepository {
         jdbc.queryForObject("select pg_advisory_xact_lock(4815162342)", Object.class);
     }
 
-    public CategoryDtos.Response get(long id) {
-        return Sql.one(jdbc.query("select * from category where id=?", ROW, id), "Category");
+    public CategoryDtos.Response getCategory(long id) {
+        return Sql.firstRowOrThrowNotFound(jdbc.query("select * from category where id=?", ROW, id), "Category");
     }
 
     public PageResponse<CategoryDtos.Response> list(int page, int size) {
-        int offset = PageResponse.offset(page, size);
+        int offset = PageResponse.validatePageBoundsAndCalculateOffset(page, size);
         return new PageResponse<>(
                 jdbc.query(
                         "select * from category order by id limit ? offset ?", ROW, size, offset),

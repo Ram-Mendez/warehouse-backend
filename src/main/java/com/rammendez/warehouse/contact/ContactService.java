@@ -24,14 +24,14 @@ public class ContactService {
     }
 
     @Transactional
-    public ContactDtos.Accepted submit(ContactDtos.Input input) {
-        var message = repository.get(repository.insert(input));
+    public ContactDtos.Accepted submitContactMessageAndReturnAcknowledgement(ContactDtos.Input input) {
+        var message = repository.getContactMessage(repository.insert(input));
         return new ContactDtos.Accepted(message.id(), message.status(), message.createdAt());
     }
 
     @PreAuthorize("hasAuthority('PERM_CONTACT_READ')")
-    public ContactDtos.Response get(UUID id) {
-        return repository.get(id);
+    public ContactDtos.Response getContactMessage(UUID id) {
+        return repository.getContactMessage(id);
     }
 
     @PreAuthorize("hasAuthority('PERM_CONTACT_READ')")
@@ -41,10 +41,10 @@ public class ContactService {
 
     @Transactional
     @PreAuthorize("hasAuthority('PERM_CONTACT_MANAGE')")
-    public ContactDtos.Response status(UUID id, ContactDtos.Status status) {
-        repository.get(id);
-        repository.status(id, status, access.userId());
-        audit.event("CONTACT_STATUS_CHANGED", "contact_message", id);
-        return repository.get(id);
+    public ContactDtos.Response updateContactMessageStatusAndAssignActor(UUID id, ContactDtos.Status status) {
+        repository.getContactMessage(id);
+        repository.updateContactMessageStatusAndAssignActor(id, status, access.getAuthenticatedUserId());
+        audit.recordAuditEventWithActorAndWarehouseReferences("CONTACT_STATUS_CHANGED", "contact_message", id);
+        return repository.getContactMessage(id);
     }
 }

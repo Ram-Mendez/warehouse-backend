@@ -23,8 +23,8 @@ public class ContactController {
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     @SecurityRequirements
-    public ContactDtos.Accepted submit(@Valid @RequestBody ContactDtos.Input input) {
-        return service.submit(input);
+    public ContactDtos.Accepted submitContactMessageAndReturnAcknowledgement(@Valid @RequestBody ContactDtos.Input input) {
+        return service.submitContactMessageAndReturnAcknowledgement(input);
     }
 
     @GetMapping
@@ -35,13 +35,13 @@ public class ContactController {
     }
 
     @GetMapping("/{id}")
-    public ContactDtos.Response get(@PathVariable UUID id) {
-        return service.get(id);
+    public ContactDtos.Response getContactMessage(@PathVariable UUID id) {
+        return service.getContactMessage(id);
     }
 
     @PatchMapping("/{id}/status")
-    public ContactDtos.Response status(
+    public ContactDtos.Response updateContactMessageStatusAndAssignActor(
             @PathVariable UUID id, @Valid @RequestBody ContactDtos.StatusInput input) {
-        return service.status(id, input.status());
+        return service.updateContactMessageStatusAndAssignActor(id, input.status());
     }
 }

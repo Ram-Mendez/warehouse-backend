@@ -8,7 +8,7 @@ import java.util.Map;
 
 class CatalogSecurityIntegrationTest extends PostgresIntegrationTest {
     @Test
-    void auditUpdateCannotRevealAnUnscopedHistoricalWarehouse() throws Exception {
+    void movementAuditHidesUpdateHistoryWhenUserLacksPreviousWarehouseScope() throws Exception {
         java.util.UUID id = java.util.UUID.randomUUID();
         jdbc.update(
                 "insert into"
@@ -23,14 +23,14 @@ class CatalogSecurityIntegrationTest extends PostgresIntegrationTest {
                 "delete from security_user_warehouse_scope where user_id=? and warehouse_id=?",
                 managerId,
                 south);
-        var hidden = json(call("GET", "/api/v1/audit/movements/" + id, manager, null, 200));
+        var hidden = parseHttpResponseJson(executeHttpRequestAndAssertStatus("GET", "/api/v1/audit/movements/" + id, manager, null, 200));
         assertThat(hidden.path("totalElements").asInt()).isZero();
-        var visible = json(call("GET", "/api/v1/audit/movements/" + id, admin, null, 200));
+        var visible = parseHttpResponseJson(executeHttpRequestAndAssertStatus("GET", "/api/v1/audit/movements/" + id, admin, null, 200));
         assertThat(visible.path("totalElements").asInt()).isEqualTo(2);
     }
 
     @Test
-    void categoryCrudAndInactiveState() throws Exception {
+    void categoryCreationReadAndDeactivationEnforceUniquenessPermissionsAndValidation() throws Exception {
         var input =
                 Map.of(
                         "code",
@@ -41,29 +41,29 @@ class CatalogSecurityIntegrationTest extends PostgresIntegrationTest {
                         category,
                         "active",
                         true);
-        var created = json(call("POST", "/api/v1/categories", admin, input, 201));
+        var created = parseHttpResponseJson(executeHttpRequestAndAssertStatus("POST", "/api/v1/categories", admin, input, 201));
         long id = created.path("id").asLong();
-        call("GET", "/api/v1/categories/" + id, worker, null, 200);
-        call(
+        executeHttpRequestAndAssertStatus("GET", "/api/v1/categories/" + id, worker, null, 200);
+        executeHttpRequestAndAssertStatus(
                 "PUT",
                 "/api/v1/categories/" + id,
                 admin,
                 Map.of("code", "CAT-" + suffix, "name", "Renamed", "active", false),
                 200);
-        call("POST", "/api/v1/categories", admin, input, 409);
-        call("POST", "/api/v1/categories", worker, input, 403);
-        call(
+        executeHttpRequestAndAssertStatus("POST", "/api/v1/categories", admin, input, 409);
+        executeHttpRequestAndAssertStatus("POST", "/api/v1/categories", worker, input, 403);
+        executeHttpRequestAndAssertStatus(
                 "POST",
                 "/api/v1/categories",
                 admin,
                 Map.of("code", " ", "name", " ", "active", true),
                 400);
-        call("GET", "/api/v1/categories/99999999", admin, null, 404);
+        executeHttpRequestAndAssertStatus("GET", "/api/v1/categories/99999999", admin, null, 404);
     }
 
     @Test
-    void categoryCannotBecomeItsOwnAncestor() throws Exception {
-        call(
+    void categoryCannotSetItselfAsParent() throws Exception {
+        executeHttpRequestAndAssertStatus(
                 "PUT",
                 "/api/v1/categories/" + category,
                 admin,
@@ -80,7 +80,7 @@ class CatalogSecurityIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
-    void supplierCrudAndValidation() throws Exception {
+    void supplierCreationReadAndDeactivationRejectDuplicateCodesAndInvalidEmail() throws Exception {
         var input =
                 Map.of(
                         "code",
@@ -91,16 +91,16 @@ class CatalogSecurityIntegrationTest extends PostgresIntegrationTest {
                         "supplier@example.test",
                         "active",
                         true);
-        long id = json(call("POST", "/api/v1/suppliers", admin, input, 201)).path("id").asLong();
-        call("GET", "/api/v1/suppliers/" + id, worker, null, 200);
-        call(
+        long id = parseHttpResponseJson(executeHttpRequestAndAssertStatus("POST", "/api/v1/suppliers", admin, input, 201)).path("id").asLong();
+        executeHttpRequestAndAssertStatus("GET", "/api/v1/suppliers/" + id, worker, null, 200);
+        executeHttpRequestAndAssertStatus(
                 "PUT",
                 "/api/v1/suppliers/" + id,
                 admin,
                 Map.of("code", "SUP-" + suffix, "name", "Inactive supplier", "active", false),
                 200);
-        call("POST", "/api/v1/suppliers", admin, input, 409);
-        call(
+        executeHttpRequestAndAssertStatus("POST", "/api/v1/suppliers", admin, input, 409);
+        executeHttpRequestAndAssertStatus(
                 "POST",
                 "/api/v1/suppliers",
                 admin,
@@ -111,8 +111,8 @@ class CatalogSecurityIntegrationTest extends PostgresIntegrationTest {
     @Test
     void warehouseCreationGrantsOnlyCreatorAndCreatesDefaultLocation() throws Exception {
         var created =
-                json(
-                        call(
+                parseHttpResponseJson(
+                        executeHttpRequestAndAssertStatus(
                                 "POST",
                                 "/api/v1/warehouses",
                                 manager,
@@ -125,28 +125,28 @@ class CatalogSecurityIntegrationTest extends PostgresIntegrationTest {
                                         true),
                                 201));
         long id = created.path("id").asLong();
-        call("GET", "/api/v1/warehouses/" + id, manager, null, 200);
-        call("GET", "/api/v1/warehouses/" + id, admin, null, 403);
-        call(
+        executeHttpRequestAndAssertStatus("GET", "/api/v1/warehouses/" + id, manager, null, 200);
+        executeHttpRequestAndAssertStatus("GET", "/api/v1/warehouses/" + id, admin, null, 403);
+        executeHttpRequestAndAssertStatus(
                 "GET",
                 "/api/v1/warehouses/" + north + "/locations/" + northLocation,
                 worker,
                 null,
                 200);
-        call(
+        executeHttpRequestAndAssertStatus(
                 "GET",
                 "/api/v1/warehouses/" + south + "/locations/" + southLocation,
                 worker,
                 null,
                 403);
-        call(
+        executeHttpRequestAndAssertStatus(
                 "PUT",
                 "/api/v1/warehouses/" + id,
                 manager,
                 Map.of("code", "NEW-" + suffix, "name", "Updated warehouse", "active", true),
                 200);
         assertThat(
-                        json(call(
+                        parseHttpResponseJson(executeHttpRequestAndAssertStatus(
                                         "GET",
                                         "/api/v1/warehouses/" + id + "/locations",
                                         manager,
@@ -161,14 +161,33 @@ class CatalogSecurityIntegrationTest extends PostgresIntegrationTest {
 
     @Test
     void warehouseScopeAndPermissionsAreBothRequired() throws Exception {
-        call("GET", "/api/v1/warehouses/" + north, worker, null, 200);
-        call("GET", "/api/v1/warehouses/" + south, worker, null, 403);
-        call("GET", "/api/v1/warehouses/" + south + "/inventory", worker, null, 403);
-        var list = json(call("GET", "/api/v1/warehouses", worker, null, 200));
+        executeHttpRequestAndAssertStatus("GET", "/api/v1/warehouses/" + north, worker, null, 200);
+        executeHttpRequestAndAssertStatus("GET", "/api/v1/warehouses/" + south, worker, null, 403);
+        executeHttpRequestAndAssertStatus("GET", "/api/v1/warehouses/" + south + "/inventory", worker, null, 403);
+        var list = parseHttpResponseJson(executeHttpRequestAndAssertStatus("GET", "/api/v1/warehouses", worker, null, 200));
         assertThat(list.path("totalElements").asLong()).isEqualTo(1);
-        call("POST", "/api/v1/transfers", worker, transfer(java.math.BigDecimal.ONE), 403);
+        executeHttpRequestAndAssertStatus("POST", "/api/v1/transfers", worker, createNorthToSouthTransferRequestBody(java.math.BigDecimal.ONE), 403);
+        postNorthWarehouseReceiptAndReturnMovement(java.math.BigDecimal.TEN);
+        executeHttpRequestAndAssertStatus("POST", "/api/v1/movements/receipt", admin,
+                createStockMovementRequestBody(south, java.math.BigDecimal.TEN), 201);
+        for (String filter : java.util.List.of("", "?productId=" + product,
+                "?warehouseId=" + north, "?warehouseId=" + north + "&productId=" + product)) {
+            var inventory = parseHttpResponseJson(executeHttpRequestAndAssertStatus(
+                    "GET", "/api/v1/inventory" + filter, worker, null, 200));
+            assertThat(inventory.path("totalElements").asLong()).isEqualTo(1);
+            assertThat(inventory.path("content").size()).isEqualTo(1);
+            assertThat(inventory.path("content").get(0).path("warehouseId").asLong()).isEqualTo(north);
+            assertThat(inventory.path("content").get(0).path("productId").asLong()).isEqualTo(product);
+        }
+        executeHttpRequestAndAssertStatus("GET", "/api/v1/inventory?warehouseId=" + south, worker, null, 403);
+        jdbc.update("delete from security_user_warehouse_scope where user_id=?", workerId);
+        var empty = parseHttpResponseJson(executeHttpRequestAndAssertStatus(
+                "GET", "/api/v1/inventory", worker, null, 200));
+        assertThat(empty.path("totalElements").asLong()).isZero();
+        assertThat(empty.path("content").size()).isZero();
         jdbc.update("delete from security_user_role where user_id=?", workerId);
-        call("GET", "/api/v1/warehouses/" + north, worker, null, 403);
+        executeHttpRequestAndAssertStatus("GET", "/api/v1/warehouses/" + north, worker, null, 403);
+        executeHttpRequestAndAssertStatus("GET", "/api/v1/inventory", worker, null, 403);
     }
 
     @Test
@@ -176,32 +195,46 @@ class CatalogSecurityIntegrationTest extends PostgresIntegrationTest {
         jdbc.update(
                 "update security_user_warehouse_scope set scope_role='VIEWER' where user_id=?",
                 workerId);
-        call("GET", "/api/v1/warehouses/" + north + "/inventory", worker, null, 200);
-        call(
+        executeHttpRequestAndAssertStatus("GET", "/api/v1/warehouses/" + north + "/inventory", worker, null, 200);
+        executeHttpRequestAndAssertStatus(
                 "POST",
                 "/api/v1/movements/receipt",
                 worker,
-                stock(north, java.math.BigDecimal.ONE),
+                createStockMovementRequestBody(north, java.math.BigDecimal.ONE),
                 403);
     }
 
     @Test
-    void productCreateDuplicateSkuReadAndVersionedUpdate() throws Exception {
-        var input = productInput("SKU-" + suffix, "New product");
-        var created = json(call("POST", "/api/v1/products", admin, input, 201));
+    void productCreationLinksSupplierAndRejectsDuplicateSkuWhileUpdatesRejectStaleVersion() throws Exception {
+        var input = createProductWithSupplierRequestBody("SKU-" + suffix, "New product");
+        var created = parseHttpResponseJson(executeHttpRequestAndAssertStatus("POST", "/api/v1/products", admin, input, 201));
         long id = created.path("id").asLong();
         assertThat(created.path("version").asLong()).isZero();
-        call("GET", "/api/v1/products/" + id, worker, null, 200);
-        var links = json(call("GET", "/api/v1/products/" + id + "/suppliers", worker, null, 200));
+        executeHttpRequestAndAssertStatus("GET", "/api/v1/products/" + id, worker, null, 200);
+        var links = parseHttpResponseJson(executeHttpRequestAndAssertStatus("GET", "/api/v1/products/" + id + "/suppliers", worker, null, 200));
         assertThat(links.path("content").get(0).path("supplierId").asLong()).isEqualTo(supplier);
-        call("POST", "/api/v1/products", admin, input, 409);
-        call("POST", "/api/v1/products", worker, productInput("OTHER-" + suffix, "Denied"), 403);
+        executeHttpRequestAndAssertStatus("POST", "/api/v1/products", admin, input, 409);
+        executeHttpRequestAndAssertStatus("POST", "/api/v1/products", worker, createProductWithSupplierRequestBody("OTHER-" + suffix, "Denied"), 403);
         var changed = new java.util.HashMap<>(input);
         changed.put("name", "Changed");
         changed.put("version", 0);
-        var updated = json(call("PUT", "/api/v1/products/" + id, admin, changed, 200));
+        var updated = parseHttpResponseJson(executeHttpRequestAndAssertStatus("PUT", "/api/v1/products/" + id, admin, changed, 200));
         assertThat(updated.path("version").asLong()).isEqualTo(1);
-        call("PUT", "/api/v1/products/" + id, admin, changed, 409);
+        var rejected = new java.util.HashMap<>(changed);
+        rejected.put("name", "Rejected overwrite");
+        rejected.put("unitCost", 99);
+        for (Long version : new Long[] {0L, 99L, null}) {
+            if (version == null) {
+                rejected.remove("version");
+            } else {
+                rejected.put("version", version);
+            }
+            executeHttpRequestAndAssertStatus("PUT", "/api/v1/products/" + id, admin, rejected, 409);
+            var preserved = parseHttpResponseJson(executeHttpRequestAndAssertStatus(
+                    "GET", "/api/v1/products/" + id, admin, null, 200));
+            assertThat(preserved.path("name").asText()).isEqualTo("Changed");
+            assertThat(preserved.path("version").asLong()).isEqualTo(1);
+        }
         assertThat(
                         jdbc.queryForObject(
                                 "select unit_cost from product_supplier where product_id=? and"
@@ -213,16 +246,16 @@ class CatalogSecurityIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
-    void productFilteringPaginationAndSorting() throws Exception {
-        call(
+    void productFiltersReturnMatchingProductAndRejectExcessivePageSizeOrUnknownSort() throws Exception {
+        executeHttpRequestAndAssertStatus(
                 "POST",
                 "/api/v1/products",
                 admin,
-                productInput("FILTER-" + suffix, "Findable product"),
+                createProductWithSupplierRequestBody("FILTER-" + suffix, "Findable product"),
                 201);
         var found =
-                json(
-                        call(
+                parseHttpResponseJson(
+                        executeHttpRequestAndAssertStatus(
                                 "GET",
                                 "/api/v1/products?search=Findable&categoryId="
                                         + category
@@ -234,23 +267,23 @@ class CatalogSecurityIntegrationTest extends PostgresIntegrationTest {
                                 200));
         assertThat(found.path("content").size()).isEqualTo(1);
         assertThat(found.path("totalElements").asInt()).isEqualTo(1);
-        call("GET", "/api/v1/products?size=101", admin, null, 400);
-        call("GET", "/api/v1/products?sort=sql", admin, null, 400);
-        call("GET", "/api/v1/products?sku=FILTER-" + suffix, admin, null, 200);
+        executeHttpRequestAndAssertStatus("GET", "/api/v1/products?size=101", admin, null, 400);
+        executeHttpRequestAndAssertStatus("GET", "/api/v1/products?sort=sql", admin, null, 400);
+        executeHttpRequestAndAssertStatus("GET", "/api/v1/products?sku=FILTER-" + suffix, admin, null, 200);
     }
 
     @Test
     void supplierOnlyProductEditAdvancesVersionAndRejectsStaleUpdate() throws Exception {
-        var input = productInput("COST-" + suffix, "Costed product");
-        var created = json(call("POST", "/api/v1/products", admin, input, 201));
+        var input = createProductWithSupplierRequestBody("COST-" + suffix, "Costed product");
+        var created = parseHttpResponseJson(executeHttpRequestAndAssertStatus("POST", "/api/v1/products", admin, input, 201));
         long id = created.path("id").asLong();
         var update = new java.util.HashMap<>(input);
         update.put("version", 0);
         update.put("unitCost", 8.25);
-        var changed = json(call("PUT", "/api/v1/products/" + id, admin, update, 200));
+        var changed = parseHttpResponseJson(executeHttpRequestAndAssertStatus("PUT", "/api/v1/products/" + id, admin, update, 200));
         assertThat(changed.path("version").asLong()).isEqualTo(1);
         update.put("unitCost", 9.75);
-        call("PUT", "/api/v1/products/" + id, admin, update, 409);
+        executeHttpRequestAndAssertStatus("PUT", "/api/v1/products/" + id, admin, update, 409);
         assertThat(
                         jdbc.queryForObject(
                                 "select unit_cost from product_supplier where product_id=? and"
@@ -323,65 +356,67 @@ class CatalogSecurityIntegrationTest extends PostgresIntegrationTest {
     @Test
     void productSearchEscapesUnderscorePercentAndBackslashLiterally() throws Exception {
         String prefix = "LITERAL" + suffix;
-        call("POST", "/api/v1/products", admin, productInput(prefix + "_A", "Underscore"), 201);
-        call("POST", "/api/v1/products", admin, productInput(prefix + "XA", "Decoy"), 201);
-        call("POST", "/api/v1/products", admin, productInput(prefix + "%B", "Percent"), 201);
-        call("POST", "/api/v1/products", admin, productInput(prefix + "XB", "Decoy percent"), 201);
-        call("POST", "/api/v1/products", admin, productInput(prefix + "\\C", "Backslash"), 201);
+        executeHttpRequestAndAssertStatus("POST", "/api/v1/products", admin, createProductWithSupplierRequestBody(prefix + "_A", "Underscore"), 201);
+        executeHttpRequestAndAssertStatus("POST", "/api/v1/products", admin, createProductWithSupplierRequestBody(prefix + "XA", "Decoy"), 201);
+        executeHttpRequestAndAssertStatus("POST", "/api/v1/products", admin, createProductWithSupplierRequestBody(prefix + "%B", "Percent"), 201);
+        executeHttpRequestAndAssertStatus("POST", "/api/v1/products", admin, createProductWithSupplierRequestBody(prefix + "XB", "Decoy percent"), 201);
+        executeHttpRequestAndAssertStatus("POST", "/api/v1/products", admin, createProductWithSupplierRequestBody(prefix + "\\C", "Backslash"), 201);
         for (String literal : java.util.List.of("_", "%", "\\")) {
             String search =
                     java.net.URLEncoder.encode(
                             prefix + literal, java.nio.charset.StandardCharsets.UTF_8);
-            var result = json(call("GET", "/api/v1/products?search=" + search, admin, null, 200));
+            var result = parseHttpResponseJson(executeHttpRequestAndAssertStatus("GET", "/api/v1/products?search=" + search, admin, null, 200));
             assertThat(result.path("totalElements").asInt()).isEqualTo(1);
+            assertThat(result.path("content").size()).isEqualTo(1);
+            assertThat(result.path("content").get(0).path("sku").asText()).startsWith(prefix + literal);
         }
     }
 
     @Test
-    void auditReadsRespectBothWarehouseScopes() throws Exception {
+    void auditQueriesExcludeUnscopedWarehouseHistoryAndRejectUnauthorizedReads() throws Exception {
         var movement =
-                json(
-                        call(
+                parseHttpResponseJson(
+                        executeHttpRequestAndAssertStatus(
                                 "POST",
                                 "/api/v1/movements/receipt",
                                 admin,
-                                stock(south, java.math.BigDecimal.ONE),
+                                createStockMovementRequestBody(south, java.math.BigDecimal.ONE),
                                 201));
         jdbc.update(
                 "delete from security_user_warehouse_scope where user_id=? and warehouse_id=?",
                 managerId,
                 south);
-        call("GET", "/api/v1/audit/movements/" + movement.path("id").asText(), manager, null, 403);
+        executeHttpRequestAndAssertStatus("GET", "/api/v1/audit/movements/" + movement.path("id").asText(), manager, null, 403);
         var events =
-                json(
-                        call(
+                parseHttpResponseJson(
+                        executeHttpRequestAndAssertStatus(
                                 "GET",
                                 "/api/v1/audit/events?entityId=" + movement.path("id").asText(),
                                 manager,
                                 null,
                                 200));
         assertThat(events.path("totalElements").asInt()).isZero();
-        var list = json(call("GET", "/api/v1/audit/stock-movements", manager, null, 200));
+        var list = parseHttpResponseJson(executeHttpRequestAndAssertStatus("GET", "/api/v1/audit/stock-movements", manager, null, 200));
         for (var row : list.path("content")) {
             assertThat(row.path("newRow").path("target_warehouse_id").asLong()).isNotEqualTo(south);
         }
-        call("GET", "/api/v1/audit/events", worker, null, 403);
+        executeHttpRequestAndAssertStatus("GET", "/api/v1/audit/events", worker, null, 403);
     }
 
     @Test
-    void correlationAndFrameworkErrorsAreConsistent() throws Exception {
+    void unauthorizedResponsePreservesCorrelationIdAndUnknownOrUnsupportedEndpointsReturnExpectedStatuses() throws Exception {
         var response =
                 mvc.perform(
                                 org.springframework.test.web.servlet.request.MockMvcRequestBuilders
                                         .get("/api/v1/products")
                                         .header("X-Correlation-Id", "integration-request"))
                         .andReturn();
-        var error = json(response);
+        var error = parseHttpResponseJson(response);
         assertThat(error.path("status").asInt()).isEqualTo(401);
         assertThat(error.path("correlationId").asText()).isEqualTo("integration-request");
         assertThat(response.getResponse().getHeader("X-Correlation-Id"))
                 .isEqualTo("integration-request");
-        call("GET", "/api/v1/not-an-endpoint", admin, null, 404);
-        call("DELETE", "/api/v1/products/" + product, admin, null, 405);
+        executeHttpRequestAndAssertStatus("GET", "/api/v1/not-an-endpoint", admin, null, 404);
+        executeHttpRequestAndAssertStatus("DELETE", "/api/v1/products/" + product, admin, null, 405);
     }
 }

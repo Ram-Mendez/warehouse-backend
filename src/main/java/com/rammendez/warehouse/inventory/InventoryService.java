@@ -38,22 +38,22 @@ public class InventoryService {
     }
 
     @PreAuthorize("hasAuthority('PERM_INVENTORY_READ')")
-    public PageResponse<InventoryRepository.Balance> list(
+    public PageResponse<InventoryRepository.Balance> listInventoryBalancesWithinUserScope(
             Long warehouseId, Long productId, int page, int size) {
         if (warehouseId != null) {
-            access.warehouse(warehouseId, false);
-            warehouses.get(warehouseId);
+            access.requireWarehouseScope(warehouseId, false);
+            warehouses.getWarehouse(warehouseId);
         }
-        return repository.list(access.userId(), warehouseId, productId, page, size);
+        return repository.listInventoryBalancesWithinUserScope(access.getAuthenticatedUserId(), warehouseId, productId, page, size);
     }
 
     @PreAuthorize("hasAuthority('PERM_INVENTORY_READ')")
-    public Stock stock(long warehouseId, long productId) {
-        access.warehouse(warehouseId, false);
-        warehouses.get(warehouseId);
+    public Stock getProductStockTotalsInWarehouse(long warehouseId, long productId) {
+        access.requireWarehouseScope(warehouseId, false);
+        warehouses.getWarehouse(warehouseId);
         if (!products.existsById(productId)) {
             throw BusinessException.missing("Product");
         }
-        return repository.stock(warehouseId, productId);
+        return repository.sumProductStockAcrossWarehouseLocations(warehouseId, productId);
     }
 }

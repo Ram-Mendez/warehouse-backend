@@ -84,9 +84,9 @@ public class SecurityConfig {
                                 .authenticated());
         var resolver = new DefaultBearerTokenResolver();
         org.springframework.security.web.AuthenticationEntryPoint entry =
-                (request, response, error) -> securityError(request, response, 401, mapper);
+                (request, response, error) -> writeSecurityProblemResponse(request, response, 401, mapper);
         org.springframework.security.web.access.AccessDeniedHandler denied =
-                (request, response, error) -> securityError(request, response, 403, mapper);
+                (request, response, error) -> writeSecurityProblemResponse(request, response, 403, mapper);
         http.oauth2ResourceServer(
                 oauth ->
                         oauth.bearerTokenResolver(
@@ -119,34 +119,34 @@ public class SecurityConfig {
                                                                         Long.parseLong(
                                                                                 token.getSubject());
                                                             } catch (NumberFormatException ex) {
-                                                                throw invalidToken();
+                                                                throw createInvalidTokenException();
                                                             }
                                                             var user =
                                                                     repository
-                                                                            .byId(userId)
+                                                                            .findUserById(userId)
                                                                             .orElseThrow(
                                                                                     SecurityConfig
-                                                                                            ::invalidToken);
+                                                                                            ::createInvalidTokenException);
                                                             Number version = token.getClaim("av");
                                                             if (!user.enabled()
                                                                     || user.locked()
                                                                     || version == null
                                                                     || version.longValue()
                                                                             != user.authVersion()) {
-                                                                throw invalidToken();
+                                                                throw createInvalidTokenException();
                                                             }
                                                             var authorities =
                                                                     new ArrayList<
                                                                             SimpleGrantedAuthority>();
                                                             repository
-                                                                    .roles(userId)
+                                                                    .findUserRoleCodes(userId)
                                                                     .forEach(
                                                                             role ->
                                                                                     authorities.add(
                                                                                             new SimpleGrantedAuthority(
                                                                                                     role)));
                                                             repository
-                                                                    .permissions(userId)
+                                                                    .findUserPermissionCodes(userId)
                                                                     .forEach(
                                                                             permission ->
                                                                                     authorities.add(
@@ -162,11 +162,11 @@ public class SecurityConfig {
         return http.build();
     }
 
-    private static OAuth2AuthenticationException invalidToken() {
+    private static OAuth2AuthenticationException createInvalidTokenException() {
         return new OAuth2AuthenticationException(new OAuth2Error("invalid_token"));
     }
 
-    private static void securityError(
+    private static void writeSecurityProblemResponse(
             jakarta.servlet.http.HttpServletRequest request,
             jakarta.servlet.http.HttpServletResponse response,
             int status,
@@ -177,7 +177,7 @@ public class SecurityConfig {
         response.getWriter()
                 .write(
                         mapper.writeValueAsString(
-                                ApiExceptionHandler.problem(
+                                ApiExceptionHandler.createProblemDetailWithRequestMetadata(
                                         org.springframework.http.HttpStatus.valueOf(status),
                                         "Authentication or permission denied",
                                         request)));

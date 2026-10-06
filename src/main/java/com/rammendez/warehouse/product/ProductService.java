@@ -32,18 +32,18 @@ public class ProductService {
     }
 
     @PreAuthorize("hasAuthority('PERM_PRODUCT_READ')")
-    public ProductDtos.Response get(long id) {
-        return response(require(id));
+    public ProductDtos.Response getProduct(long id) {
+        return createProductResponse(getProductOrThrowNotFound(id));
     }
 
     @PreAuthorize("hasAuthority('PERM_PRODUCT_READ')")
-    public PageResponse<ProductDtos.SupplierLink> suppliers(long id, int page, int size) {
-        require(id);
-        return queries.suppliers(id, page, size);
+    public PageResponse<ProductDtos.SupplierLink> listProductSupplierLinks(long id, int page, int size) {
+        getProductOrThrowNotFound(id);
+        return queries.listProductSupplierLinks(id, page, size);
     }
 
     @PreAuthorize("hasAuthority('PERM_PRODUCT_READ')")
-    public PageResponse<ProductDtos.Response> list(
+    public PageResponse<ProductDtos.Response> listFilteredAndSortedProducts(
             String search,
             String sku,
             Long categoryId,
@@ -52,48 +52,48 @@ public class ProductService {
             int page,
             int size,
             String sort) {
-        return queries.list(search, sku, categoryId, supplierId, active, page, size, sort);
+        return queries.listFilteredAndSortedProducts(search, sku, categoryId, supplierId, active, page, size, sort);
     }
 
     @Transactional
     @PreAuthorize("hasAuthority('PERM_PRODUCT_WRITE')")
     public ProductDtos.Response create(ProductDtos.Input input) {
         var product = new Product();
-        apply(product, input);
+        validateReferencesAndApplyProductInput(product, input);
         repository.saveAndFlush(product);
-        queries.supplier(product.id, input.supplierId(), input.unitCost());
-        audit.event("PRODUCT_CREATED", "product", product.id);
-        return response(product);
+        queries.upsertProductSupplierCostIfSupplierProvided(product.id, input.supplierId(), input.unitCost());
+        audit.recordAuditEventWithActorAndWarehouseReferences("PRODUCT_CREATED", "product", product.id);
+        return createProductResponse(product);
     }
 
     @Transactional
     @PreAuthorize("hasAuthority('PERM_PRODUCT_WRITE')")
-    public ProductDtos.Response update(long id, ProductDtos.Input input) {
-        var product = require(id);
+    public ProductDtos.Response updateProductWithRequiredCurrentVersion(long id, ProductDtos.Input input) {
+        var product = getProductOrThrowNotFound(id);
         if (input.version() == null || !input.version().equals(product.version)) {
-            throw BusinessException.conflict("Current product version is required");
+            throw BusinessException.conflict("Product version is stale");
         }
-        apply(product, input);
+        validateReferencesAndApplyProductInput(product, input);
         product.updatedAt = java.time.Instant.now();
         repository.flush();
-        queries.supplier(id, input.supplierId(), input.unitCost());
-        audit.event("PRODUCT_UPDATED", "product", id);
-        return response(product);
+        queries.upsertProductSupplierCostIfSupplierProvided(id, input.supplierId(), input.unitCost());
+        audit.recordAuditEventWithActorAndWarehouseReferences("PRODUCT_UPDATED", "product", id);
+        return createProductResponse(product);
     }
 
-    private Product require(long id) {
+    private Product getProductOrThrowNotFound(long id) {
         return repository.findById(id).orElseThrow(() -> BusinessException.missing("Product"));
     }
 
-    private void apply(Product product, ProductDtos.Input input) {
+    private void validateReferencesAndApplyProductInput(Product product, ProductDtos.Input input) {
         if (input.unitCost() != null && input.supplierId() == null) {
             throw BusinessException.invalid("unitCost requires supplierId");
         }
         if (input.categoryId() != null) {
-            categories.get(input.categoryId());
+            categories.getCategory(input.categoryId());
         }
         if (input.supplierId() != null) {
-            suppliers.get(input.supplierId());
+            suppliers.getSupplier(input.supplierId());
         }
         product.sku = input.sku().trim();
         product.barcode = input.barcode();
@@ -105,7 +105,7 @@ public class ProductService {
         product.active = input.active();
     }
 
-    private ProductDtos.Response response(Product product) {
+    private ProductDtos.Response createProductResponse(Product product) {
         return new ProductDtos.Response(
                 product.id,
                 product.sku,

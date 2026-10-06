@@ -56,26 +56,26 @@ public class MovementService {
 
     @Transactional
     @PreAuthorize("hasAuthority('PERM_STOCK_RECEIVE')")
-    public MovementDtos.Response receipt(MovementDtos.StockInput input) {
-        return stock(input, MovementType.RECEIPT, true);
+    public MovementDtos.Response receiveStockAndPostReceiptMovement(MovementDtos.StockInput input) {
+        return postSingleStockMovementAndApplyQuantityChange(input, MovementType.RECEIPT, true);
     }
 
     @Transactional
     @PreAuthorize("hasAuthority('PERM_STOCK_RECEIVE')")
-    public MovementDtos.Response returned(MovementDtos.StockInput input) {
-        return stock(input, MovementType.RETURN, true);
+    public MovementDtos.Response returnStockAndPostReturnMovement(MovementDtos.StockInput input) {
+        return postSingleStockMovementAndApplyQuantityChange(input, MovementType.RETURN, true);
     }
 
     @Transactional
     @PreAuthorize("hasAuthority('PERM_STOCK_ISSUE')")
-    public MovementDtos.Response issue(MovementDtos.StockInput input) {
-        return stock(input, MovementType.ISSUE, false);
+    public MovementDtos.Response issueAvailableStockAndPostIssueMovement(MovementDtos.StockInput input) {
+        return postSingleStockMovementAndApplyQuantityChange(input, MovementType.ISSUE, false);
     }
 
-    private MovementDtos.Response stock(
+    private MovementDtos.Response postSingleStockMovementAndApplyQuantityChange(
             MovementDtos.StockInput input, MovementType type, boolean incoming) {
-        positive(input.quantity());
-        long location = location(input.warehouseId(), input.locationId());
+        requirePositiveQuantityWithinSupportedPrecision(input.quantity());
+        long location = requireWritableWarehouseAndResolveActiveLocationId(input.warehouseId(), input.locationId());
         var line =
                 new MovementDtos.Line(
                         0,
@@ -95,17 +95,17 @@ public class MovementService {
                         null,
                         null,
                         List.of(line));
-        return post(List.of(plan)).movements().getFirst();
+        return validateLockApplyAndPostStockMovementPlans(List.of(plan)).movements().getFirst();
     }
 
     @Transactional
     @PreAuthorize("hasAuthority('PERM_INVENTORY_ADJUST')")
-    public MovementDtos.Response adjustment(MovementDtos.Adjustment input) {
+    public MovementDtos.Response applySignedStockAdjustmentAndPostMovement(MovementDtos.Adjustment input) {
         if (input.delta() == null || input.delta().signum() == 0) {
             throw BusinessException.invalid("Adjustment delta must be nonzero");
         }
         boolean incoming = input.delta().signum() > 0;
-        return stock(
+        return postSingleStockMovementAndApplyQuantityChange(
                 new MovementDtos.StockInput(
                         input.warehouseId(),
                         input.productId(),
@@ -119,13 +119,13 @@ public class MovementService {
 
     @Transactional
     @PreAuthorize("hasAuthority('PERM_STOCK_TRANSFER')")
-    public MovementDtos.Result transfer(MovementDtos.Transfer input) {
+    public MovementDtos.Result transferStockAndPostLinkedMovementsAtomically(MovementDtos.Transfer input) {
         if (input.sourceWarehouseId() == input.destinationWarehouseId()) {
             throw BusinessException.invalid("Transfer warehouses must differ");
         }
-        positive(input.quantity());
-        long source = location(input.sourceWarehouseId(), input.sourceLocationId());
-        long target = location(input.destinationWarehouseId(), input.destinationLocationId());
+        requirePositiveQuantityWithinSupportedPrecision(input.quantity());
+        long source = requireWritableWarehouseAndResolveActiveLocationId(input.sourceWarehouseId(), input.sourceLocationId());
+        long target = requireWritableWarehouseAndResolveActiveLocationId(input.destinationWarehouseId(), input.destinationLocationId());
         UUID group = UUID.randomUUID();
         var out =
                 new Plan(
@@ -163,29 +163,29 @@ public class MovementService {
                                         target,
                                         input.quantity(),
                                         null)));
-        var result = post(List.of(out, in));
-        audit.event("TRANSFER_COMPLETED", "transfer", group);
+        var result = validateLockApplyAndPostStockMovementPlans(List.of(out, in));
+        audit.recordAuditEventWithActorAndWarehouseReferences("TRANSFER_COMPLETED", "transfer", group);
         return result;
     }
 
     @Transactional
     @PreAuthorize("hasAuthority('PERM_INVENTORY_ADJUST')")
-    public MovementDtos.Result compensate(UUID id, String reason) {
-        var original = repository.get(id);
+    public MovementDtos.Result reversePostedMovementOrTransferWithCompensatingMovements(UUID id, String reason) {
+        var original = repository.getStockMovementWithLines(id);
         var ids =
                 original.transferGroupId() == null
                         ? List.of(id)
-                        : repository.transferIds(original.transferGroupId());
-        ids.forEach(repository::lock);
+                        : repository.findTransferMovementIdsInLockOrder(original.transferGroupId());
+        ids.forEach(repository::lockStockMovement);
         var plans = new ArrayList<Plan>();
         for (UUID originalId : ids) {
-            var movement = repository.get(originalId);
+            var movement = repository.getStockMovementWithLines(originalId);
             if (movement.status() != MovementStatus.POSTED
                     || movement.type() == MovementType.COMPENSATION) {
                 throw BusinessException.conflict(
                         "Only original posted movements can be compensated");
             }
-            checkScopes(movement, true);
+            requireScopesForAllMovementWarehouses(movement, true);
             var lines =
                     movement.lines().stream()
                             .map(
@@ -210,16 +210,16 @@ public class MovementService {
                             null,
                             lines));
         }
-        var result = post(plans);
-        audit.event("MOVEMENT_COMPENSATED", "stock_movement", id);
+        var result = validateLockApplyAndPostStockMovementPlans(plans);
+        audit.recordAuditEventWithActorAndWarehouseReferences("MOVEMENT_COMPENSATED", "stock_movement", id);
         return result;
     }
 
     @Transactional
     @PreAuthorize("hasAuthority('PERM_PURCHASE_RECEIVE')")
-    public MovementDtos.Response receivePurchase(
+    public MovementDtos.Response receivePurchaseLinesIntoDefaultLocationAndPostReceipt(
             UUID purchaseId, long warehouseId, List<MovementDtos.Line> orderedLines) {
-        long location = location(warehouseId, null);
+        long location = requireWritableWarehouseAndResolveActiveLocationId(warehouseId, null);
         var lines =
                 orderedLines.stream()
                         .map(
@@ -232,7 +232,7 @@ public class MovementService {
                                                 l.quantity(),
                                                 l.unitCost()))
                         .toList();
-        return post(List.of(
+        return validateLockApplyAndPostStockMovementPlans(List.of(
                         new Plan(
                                 MovementType.RECEIPT,
                                 null,
@@ -248,118 +248,117 @@ public class MovementService {
     }
 
     @PreAuthorize("hasAuthority('PERM_MOVEMENT_READ')")
-    public MovementDtos.Response get(UUID id) {
-        var movement = repository.get(id);
-        checkScopes(movement, false);
+    public MovementDtos.Response getStockMovementWithLines(UUID id) {
+        var movement = repository.getStockMovementWithLines(id);
+        requireScopesForAllMovementWarehouses(movement, false);
         return movement;
     }
 
     @PreAuthorize("hasAuthority('PERM_MOVEMENT_READ')")
-    public PageResponse<MovementDtos.Response> list(
+    public PageResponse<MovementDtos.Response> listStockMovementsWithinUserScope(
             Long warehouseId, Long productId, MovementType type, int page, int size) {
         if (warehouseId != null) {
-            access.warehouse(warehouseId, false);
+            access.requireWarehouseScope(warehouseId, false);
         }
-        return repository.list(access.userId(), warehouseId, productId, type, page, size);
+        return repository.listStockMovementsWithinUserScope(access.getAuthenticatedUserId(), warehouseId, productId, type, page, size);
     }
 
-    private void checkScopes(MovementDtos.Response movement, boolean write) {
+    private void requireScopesForAllMovementWarehouses(MovementDtos.Response movement, boolean write) {
         if (movement.sourceWarehouseId() != null) {
-            access.warehouse(movement.sourceWarehouseId(), write);
+            access.requireWarehouseScope(movement.sourceWarehouseId(), write);
         }
         if (movement.targetWarehouseId() != null) {
-            access.warehouse(movement.targetWarehouseId(), write);
+            access.requireWarehouseScope(movement.targetWarehouseId(), write);
         }
     }
 
-    private long location(long warehouseId, Long locationId) {
-        warehouse(warehouseId);
+    private long requireWritableWarehouseAndResolveActiveLocationId(long warehouseId, Long locationId) {
+        requireWritableActiveWarehouse(warehouseId);
         var location =
                 locationId == null
-                        ? warehouses.defaultLocation(warehouseId)
-                        : warehouses.location(warehouseId, locationId);
+                        ? warehouses.getActiveDefaultWarehouseLocation(warehouseId)
+                        : warehouses.getWarehouseLocation(warehouseId, locationId);
         if (!location.active()) {
             throw BusinessException.conflict("Location is inactive");
         }
         return location.id();
     }
 
-    private void warehouse(long warehouseId) {
-        access.warehouse(warehouseId, true);
-        if (!warehouses.get(warehouseId).active()) {
+    private void requireWritableActiveWarehouse(long warehouseId) {
+        access.requireWarehouseScope(warehouseId, true);
+        if (!warehouses.getWarehouse(warehouseId).active()) {
             throw BusinessException.conflict("Warehouse is inactive");
         }
     }
 
-    private MovementDtos.Result post(List<Plan> plans) {
-        var deltas = new TreeMap<StockKey, BigDecimal>();
+    private MovementDtos.Result validateLockApplyAndPostStockMovementPlans(List<Plan> plans) {
+        Map<StockKey, BigDecimal> deltas = new TreeMap<>();
         for (var plan : plans) {
             if (plan.source() != null) {
-                warehouse(plan.source());
+                requireWritableActiveWarehouse(plan.source());
             }
             if (plan.target() != null) {
-                warehouse(plan.target());
+                requireWritableActiveWarehouse(plan.target());
             }
             for (var line : plan.lines()) {
-                positive(line.quantity());
+                requirePositiveQuantityWithinSupportedPrecision(line.quantity());
                 repository.requireActiveProduct(line.productId());
                 if (line.sourceLocationId() != null) {
-                    location(plan.source(), line.sourceLocationId());
-                    add(
+                    requireWritableWarehouseAndResolveActiveLocationId(plan.source(), line.sourceLocationId());
+                    accumulateStockQuantityDelta(
                             deltas,
                             new StockKey(line.sourceLocationId(), line.productId()),
                             line.quantity().negate());
                 }
                 if (line.targetLocationId() != null) {
-                    location(plan.target(), line.targetLocationId());
-                    add(
+                    requireWritableWarehouseAndResolveActiveLocationId(plan.target(), line.targetLocationId());
+                    accumulateStockQuantityDelta(
                             deltas,
                             new StockKey(line.targetLocationId(), line.productId()),
                             line.quantity());
                 }
             }
         }
-        // Missing-row creation and row locks use the same deterministic location/product order.
         for (var entry : deltas.entrySet()) {
             var key = entry.getKey();
-            inventory.ensure(key.productId(), key.locationId());
-            var available = inventory.lockAvailable(key.productId(), key.locationId());
+            inventory.createInventoryBalanceIfMissing(key.productId(), key.locationId());
+            var available = inventory.lockInventoryBalanceAndGetAvailableQuantity(key.productId(), key.locationId());
             if (available.add(entry.getValue()).signum() < 0) {
                 throw BusinessException.conflict("Insufficient available stock");
             }
         }
         for (var entry : deltas.entrySet()) {
             var key = entry.getKey();
-            inventory.change(key.productId(), key.locationId(), entry.getValue());
+            inventory.applyQuantityDeltaAndAdvanceBalanceVersion(key.productId(), key.locationId(), entry.getValue());
         }
-        audit.actor();
+        audit.setTransactionLocalAuthenticatedAuditActor();
         var result = new ArrayList<MovementDtos.Response>();
         for (var plan : plans) {
             UUID id = UUID.randomUUID();
-            repository.draft(
+            repository.insertDraftStockMovement(
                     id,
                     plan.type(),
                     plan.source(),
                     plan.target(),
                     plan.reason(),
                     plan.reference(),
-                    access.userId(),
+                    access.getAuthenticatedUserId(),
                     plan.compensation(),
                     plan.group(),
                     plan.purchase());
-            plan.lines().forEach(line -> repository.line(id, line));
-            repository.posted(id, access.userId());
-            audit.event("MOVEMENT_POSTED", "stock_movement", id);
-            result.add(repository.get(id));
+            plan.lines().forEach(line -> repository.insertStockMovementLine(id, line));
+            repository.markStockMovementPostedWithActor(id, access.getAuthenticatedUserId());
+            audit.recordAuditEventWithActorAndWarehouseReferences("MOVEMENT_POSTED", "stock_movement", id);
+            result.add(repository.getStockMovementWithLines(id));
         }
         return new MovementDtos.Result(result);
     }
 
-    private static void add(Map<StockKey, BigDecimal> deltas, StockKey key, BigDecimal delta) {
+    private static void accumulateStockQuantityDelta(Map<StockKey, BigDecimal> deltas, StockKey key, BigDecimal delta) {
         deltas.merge(key, delta, BigDecimal::add);
     }
 
-    private static void positive(BigDecimal quantity) {
+    private static void requirePositiveQuantityWithinSupportedPrecision(BigDecimal quantity) {
         if (quantity == null
                 || quantity.signum() <= 0
                 || quantity.scale() > 4

@@ -24,24 +24,24 @@ public class SupplierService {
     }
 
     @PreAuthorize("hasAuthority('PERM_SUPPLIER_READ')")
-    public SupplierDtos.Response get(long id) {
-        return repository.get(id);
+    public SupplierDtos.Response getSupplier(long id) {
+        return repository.getSupplier(id);
     }
 
     @Transactional
     @PreAuthorize("hasAuthority('PERM_SUPPLIER_WRITE')")
     public SupplierDtos.Response create(SupplierDtos.Input input) {
         long id = repository.insert(input);
-        audit.event("SUPPLIER_CREATED", "supplier", id);
-        return repository.get(id);
+        audit.recordAuditEventWithActorAndWarehouseReferences("SUPPLIER_CREATED", "supplier", id);
+        return repository.getSupplier(id);
     }
 
     @Transactional
     @PreAuthorize("hasAuthority('PERM_SUPPLIER_WRITE')")
     public SupplierDtos.Response update(long id, SupplierDtos.Input input) {
-        repository.get(id);
+        repository.getSupplier(id);
         repository.update(id, input);
-        audit.event("SUPPLIER_UPDATED", "supplier", id);
-        return repository.get(id);
+        audit.recordAuditEventWithActorAndWarehouseReferences("SUPPLIER_UPDATED", "supplier", id);
+        return repository.getSupplier(id);
     }
 }

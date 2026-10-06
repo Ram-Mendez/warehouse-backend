@@ -19,15 +19,15 @@ public class AdminController {
     }
 
     @GetMapping("/users")
-    public PageResponse<AdminDtos.UserSummary> list(
+    public PageResponse<AdminDtos.UserSummary> listUserSummaries(
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
-        return service.list(page, size);
+        return service.listUserSummaries(page, size);
     }
 
     @GetMapping("/users/{id}")
-    public AdminDtos.UserResponse get(@PathVariable long id) {
-        return service.get(id);
+    public AdminDtos.UserResponse getUserWithRolesAndWarehouseScopes(@PathVariable long id) {
+        return service.getUserWithRolesAndWarehouseScopes(id);
     }
 
     @PostMapping("/users")
@@ -37,25 +37,25 @@ public class AdminController {
     }
 
     @PatchMapping("/users/{id}")
-    public AdminDtos.UserResponse update(
+    public AdminDtos.UserResponse updateUserAndRevokeAuthSessions(
             @PathVariable long id, @Valid @RequestBody AdminDtos.Update input) {
-        return service.update(id, input);
+        return service.updateUserAndRevokeAuthSessions(id, input);
     }
 
     @PutMapping("/users/{id}/roles")
-    public AdminDtos.UserResponse roles(
+    public AdminDtos.UserResponse replaceUserRolesAndRevokeAuthSessions(
             @PathVariable long id, @Valid @RequestBody AdminDtos.Roles input) {
-        return service.roles(id, input);
+        return service.replaceUserRolesAndRevokeAuthSessions(id, input);
     }
 
     @PutMapping("/users/{id}/warehouse-scopes")
-    public AdminDtos.UserResponse scopes(
+    public AdminDtos.UserResponse replaceUserWarehouseScopes(
             @PathVariable long id, @Valid @RequestBody AdminDtos.Scopes input) {
-        return service.scopes(id, input);
+        return service.replaceUserWarehouseScopes(id, input);
     }
 
     @GetMapping("/roles")
-    public List<AdminDtos.Role> roles() {
-        return service.roles();
+    public List<AdminDtos.Role> listAvailableRoles() {
+        return service.listAvailableRoles();
     }
 }

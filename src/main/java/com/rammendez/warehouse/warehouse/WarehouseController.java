@@ -17,21 +17,21 @@ public class WarehouseController {
     }
 
     @GetMapping
-    public PageResponse<WarehouseDtos.Response> list(
+    public PageResponse<WarehouseDtos.Response> listWarehousesWithinUserScope(
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
-        return service.list(page, size);
+        return service.listWarehousesWithinUserScope(page, size);
     }
 
     @GetMapping("/{id}")
-    public WarehouseDtos.Response get(@PathVariable long id) {
-        return service.get(id);
+    public WarehouseDtos.Response getWarehouse(@PathVariable long id) {
+        return service.getWarehouse(id);
     }
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    public WarehouseDtos.Response create(@Valid @RequestBody WarehouseDtos.Input input) {
-        return service.create(input);
+    public WarehouseDtos.Response createWarehouseWithDefaultLocationAndCreatorScope(@Valid @RequestBody WarehouseDtos.Input input) {
+        return service.createWarehouseWithDefaultLocationAndCreatorScope(input);
     }
 
     @PutMapping("/{id}")
@@ -41,11 +41,11 @@ public class WarehouseController {
     }
 
     @GetMapping("/{warehouseId}/locations")
-    public PageResponse<WarehouseDtos.Location> locations(
+    public PageResponse<WarehouseDtos.Location> listWarehouseLocations(
             @PathVariable long warehouseId,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
-        return service.locations(warehouseId, page, size);
+        return service.listWarehouseLocations(warehouseId, page, size);
     }
 
     @PostMapping("/{warehouseId}/locations")
@@ -56,8 +56,8 @@ public class WarehouseController {
     }
 
     @GetMapping("/{warehouseId}/locations/{id}")
-    public WarehouseDtos.Location location(@PathVariable long warehouseId, @PathVariable long id) {
-        return service.location(warehouseId, id);
+    public WarehouseDtos.Location getWarehouseLocation(@PathVariable long warehouseId, @PathVariable long id) {
+        return service.getWarehouseLocation(warehouseId, id);
     }
 
     @PutMapping("/{warehouseId}/locations/{id}")

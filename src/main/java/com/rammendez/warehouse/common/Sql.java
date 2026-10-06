@@ -8,7 +8,7 @@ import java.util.List;
 public final class Sql {
     private Sql() {}
 
-    public static <T> T one(List<T> rows, String resource) {
+    public static <T> T firstRowOrThrowNotFound(List<T> rows, String resource) {
         if (rows.isEmpty()) {
             throw BusinessException.missing(resource);
         }
@@ -19,12 +19,12 @@ public final class Sql {
         return row.getObject(column, Long.class);
     }
 
-    public static Instant instant(ResultSet row, String column) throws SQLException {
+    public static Instant readNullableInstant(ResultSet row, String column) throws SQLException {
         var timestamp = row.getTimestamp(column);
         return timestamp == null ? null : timestamp.toInstant();
     }
 
-    public static String literalLike(String input) {
+    public static String createEscapedContainsLikePattern(String input) {
         return "%" + input.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%";
     }
 }

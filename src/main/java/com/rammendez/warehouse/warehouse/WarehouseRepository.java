@@ -28,12 +28,12 @@ public class WarehouseRepository {
         this.jdbc = jdbc;
     }
 
-    public WarehouseDtos.Response get(long id) {
-        return Sql.one(jdbc.query("select * from warehouse where id=?", ROW, id), "Warehouse");
+    public WarehouseDtos.Response getWarehouse(long id) {
+        return Sql.firstRowOrThrowNotFound(jdbc.query("select * from warehouse where id=?", ROW, id), "Warehouse");
     }
 
-    public PageResponse<WarehouseDtos.Response> list(long userId, int page, int size) {
-        int offset = PageResponse.offset(page, size);
+    public PageResponse<WarehouseDtos.Response> listWarehousesWithinUserScope(long userId, int page, int size) {
+        int offset = PageResponse.validatePageBoundsAndCalculateOffset(page, size);
         String from =
                 " from warehouse w join security_user_warehouse_scope s on s.warehouse_id=w.id"
                         + " where s.user_id=?";
@@ -67,7 +67,7 @@ public class WarehouseRepository {
                 id);
     }
 
-    public void grantCreator(long userId, long warehouseId) {
+    public void grantCreatorWarehouseManagerScope(long userId, long warehouseId) {
         jdbc.update(
                 "insert into security_user_warehouse_scope(user_id,warehouse_id,scope_role) values"
                         + " (?,?,'MANAGER')",
@@ -95,8 +95,8 @@ public class WarehouseRepository {
                 id);
     }
 
-    public WarehouseDtos.Location location(long warehouseId, long id) {
-        return Sql.one(
+    public WarehouseDtos.Location getWarehouseLocation(long warehouseId, long id) {
+        return Sql.firstRowOrThrowNotFound(
                 jdbc.query(
                         "select * from warehouse_location where warehouse_id=? and id=?",
                         LOCATION,
@@ -105,8 +105,8 @@ public class WarehouseRepository {
                 "Location");
     }
 
-    public PageResponse<WarehouseDtos.Location> locations(long warehouseId, int page, int size) {
-        int offset = PageResponse.offset(page, size);
+    public PageResponse<WarehouseDtos.Location> listWarehouseLocations(long warehouseId, int page, int size) {
+        int offset = PageResponse.validatePageBoundsAndCalculateOffset(page, size);
         return new PageResponse<>(
                 jdbc.query(
                         "select * from warehouse_location where warehouse_id=? order by id limit ?"
@@ -123,8 +123,8 @@ public class WarehouseRepository {
                 size);
     }
 
-    public WarehouseDtos.Location defaultLocation(long warehouseId) {
-        return Sql.one(
+    public WarehouseDtos.Location getActiveDefaultWarehouseLocation(long warehouseId) {
+        return Sql.firstRowOrThrowNotFound(
                 jdbc.query(
                         "select * from warehouse_location where warehouse_id=? and code='DEFAULT'"
                                 + " and active=true",

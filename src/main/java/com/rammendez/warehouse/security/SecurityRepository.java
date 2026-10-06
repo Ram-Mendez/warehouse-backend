@@ -25,18 +25,18 @@ public class SecurityRepository {
         this.jdbc = jdbc;
     }
 
-    public Optional<UserAccount> lockByUsername(String username) {
+    public Optional<UserAccount> findAndLockUserByUsername(String username) {
         return jdbc
                 .query("select * from security_user where username=? for update", USER, username)
                 .stream()
                 .findFirst();
     }
 
-    public Optional<UserAccount> byId(long id) {
+    public Optional<UserAccount> findUserById(long id) {
         return jdbc.query("select * from security_user where id=?", USER, id).stream().findFirst();
     }
 
-    public List<String> roles(long userId) {
+    public List<String> findUserRoleCodes(long userId) {
         return jdbc.queryForList(
                 "select r.code from security_role r join security_user_role ur on ur.role_id=r.id"
                         + " where ur.user_id=? order by r.code",
@@ -44,7 +44,7 @@ public class SecurityRepository {
                 userId);
     }
 
-    public List<String> permissions(long userId) {
+    public List<String> findUserPermissionCodes(long userId) {
         return jdbc.queryForList(
                 "select distinct p.code from security_permission p join security_role_permission rp"
                         + " on rp.permission_id=p.id join security_user_role ur on"
@@ -53,7 +53,7 @@ public class SecurityRepository {
                 userId);
     }
 
-    public boolean hasScope(long userId, long warehouseId, boolean write) {
+    public boolean hasWarehouseScopeForRequestedAccess(long userId, long warehouseId, boolean write) {
         return Boolean.TRUE.equals(
                 jdbc.queryForObject(
                         "select exists(select 1 from security_user_warehouse_scope where user_id=?"

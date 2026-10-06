@@ -66,7 +66,7 @@ class DatabaseIntegrityIntegrationTest extends PostgresIntegrationTest {
                                 + " (?,? ,now()+interval '1 day') returning id",
                         UUID.class,
                         first,
-                        hash());
+                        createRandomSixtyFourCharacterHexTokenHashFixture());
         assertThatThrownBy(
                         () ->
                                 jdbc.update(
@@ -75,18 +75,18 @@ class DatabaseIntegrityIntegrationTest extends PostgresIntegrationTest {
                                             + " values (?,?,?,now()+interval '1 day')",
                                         second,
                                         parent,
-                                        hash()))
+                                        createRandomSixtyFourCharacterHexTokenHashFixture()))
                 .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
     }
 
-    private String hash() {
+    private String createRandomSixtyFourCharacterHexTokenHashFixture() {
         return UUID.randomUUID().toString().replace("-", "")
                 + UUID.randomUUID().toString().replace("-", "");
     }
 
     @Test
-    void forgedCompensationMustExactlyReverseOriginalLines() throws Exception {
-        UUID original = UUID.fromString(receipt(BigDecimal.TEN).path("id").asText()),
+    void compensationWithMismatchedQuantityIsRejectedWithoutChangingOriginalStock() throws Exception {
+        UUID original = UUID.fromString(postNorthWarehouseReceiptAndReturnMovement(BigDecimal.TEN).path("id").asText()),
                 id = UUID.randomUUID();
         assertThatThrownBy(
                         () ->
@@ -124,12 +124,12 @@ class DatabaseIntegrityIntegrationTest extends PostgresIntegrationTest {
                                 Integer.class,
                                 id))
                 .isZero();
-        assertThat(balance(north)).isEqualByComparingTo("10");
+        assertThat(getFixtureProductTotalStockInWarehouse(north)).isEqualByComparingTo("10");
     }
 
     @Test
-    void inventoryUniqueAndNonnegativeConstraintsAreRealPostgresql() throws Exception {
-        receipt(BigDecimal.ONE);
+    void databaseRejectsDuplicateBalanceNegativeStockAndReservationsExceedingStock() throws Exception {
+        postNorthWarehouseReceiptAndReturnMovement(BigDecimal.ONE);
         assertThatThrownBy(
                         () ->
                                 jdbc.update(
@@ -153,6 +153,6 @@ class DatabaseIntegrityIntegrationTest extends PostgresIntegrationTest {
                                                 + " product_id=?",
                                         product))
                 .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
-        assertThat(balance(north)).isEqualByComparingTo("1");
+        assertThat(getFixtureProductTotalStockInWarehouse(north)).isEqualByComparingTo("1");
     }
 }

@@ -14,13 +14,13 @@ import javax.sql.DataSource;
 
 class InventoryMovementIntegrationTest extends PostgresIntegrationTest {
     @Test
-    void receiptIssueAndReadBalance() throws Exception {
-        receipt(new BigDecimal("10.5"));
-        call("POST", "/api/v1/movements/issue", worker, stock(north, new BigDecimal("3.25")), 201);
-        assertThat(balance(north)).isEqualByComparingTo("7.25");
+    void receiptAndIssueUpdateTotalAndAvailableStockBalances() throws Exception {
+        postNorthWarehouseReceiptAndReturnMovement(new BigDecimal("10.5"));
+        executeHttpRequestAndAssertStatus("POST", "/api/v1/movements/issue", worker, createStockMovementRequestBody(north, new BigDecimal("3.25")), 201);
+        assertThat(getFixtureProductTotalStockInWarehouse(north)).isEqualByComparingTo("7.25");
         var current =
-                json(
-                        call(
+                parseHttpResponseJson(
+                        executeHttpRequestAndAssertStatus(
                                 "GET",
                                 "/api/v1/warehouses/" + north + "/inventory/" + product,
                                 worker,
@@ -28,7 +28,7 @@ class InventoryMovementIntegrationTest extends PostgresIntegrationTest {
                                 200));
         assertThat(current.path("availableQuantity").decimalValue()).isEqualByComparingTo("7.25");
         assertThat(
-                        json(call(
+                        parseHttpResponseJson(executeHttpRequestAndAssertStatus(
                                         "GET",
                                         "/api/v1/inventory?productId=" + product,
                                         worker,
@@ -40,29 +40,29 @@ class InventoryMovementIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
-    void insufficientReservedAndInvalidQuantityAreRejected() throws Exception {
-        receipt(BigDecimal.TEN);
+    void stockIssuesCannotConsumeReservedStockAndInvalidQuantitiesLeaveBalanceUnchanged() throws Exception {
+        postNorthWarehouseReceiptAndReturnMovement(BigDecimal.TEN);
         jdbc.update(
                 "update inventory_balance set reserved_quantity=4 where product_id=? and"
                         + " warehouse_location_id=?",
                 product,
                 northLocation);
-        call("POST", "/api/v1/movements/issue", admin, stock(north, new BigDecimal("7")), 409);
-        call("POST", "/api/v1/movements/issue", admin, stock(north, BigDecimal.ZERO), 400);
-        call("POST", "/api/v1/movements/receipt", admin, stock(north, new BigDecimal("-1")), 400);
-        call(
+        executeHttpRequestAndAssertStatus("POST", "/api/v1/movements/issue", admin, createStockMovementRequestBody(north, new BigDecimal("7")), 409);
+        executeHttpRequestAndAssertStatus("POST", "/api/v1/movements/issue", admin, createStockMovementRequestBody(north, BigDecimal.ZERO), 400);
+        executeHttpRequestAndAssertStatus("POST", "/api/v1/movements/receipt", admin, createStockMovementRequestBody(north, new BigDecimal("-1")), 400);
+        executeHttpRequestAndAssertStatus(
                 "POST",
                 "/api/v1/movements/receipt",
                 admin,
-                stock(north, new BigDecimal("0.00001")),
+                createStockMovementRequestBody(north, new BigDecimal("0.00001")),
                 400);
-        assertThat(balance(north)).isEqualByComparingTo("10");
+        assertThat(getFixtureProductTotalStockInWarehouse(north)).isEqualByComparingTo("10");
     }
 
     @Test
-    void signedAdjustmentAndReturnCreateLedgerEntries() throws Exception {
-        receipt(BigDecimal.TEN);
-        call(
+    void signedAdjustmentsAndStockReturnUpdateBalanceAndZeroAdjustmentIsRejected() throws Exception {
+        postNorthWarehouseReceiptAndReturnMovement(BigDecimal.TEN);
+        executeHttpRequestAndAssertStatus(
                 "POST",
                 "/api/v1/movements/adjustment",
                 manager,
@@ -76,7 +76,7 @@ class InventoryMovementIntegrationTest extends PostgresIntegrationTest {
                         "reason",
                         "Count correction"),
                 201);
-        call(
+        executeHttpRequestAndAssertStatus(
                 "POST",
                 "/api/v1/movements/adjustment",
                 manager,
@@ -90,7 +90,7 @@ class InventoryMovementIntegrationTest extends PostgresIntegrationTest {
                         "reason",
                         "Count correction"),
                 201);
-        call(
+        executeHttpRequestAndAssertStatus(
                 "POST",
                 "/api/v1/movements/adjustment",
                 manager,
@@ -104,12 +104,12 @@ class InventoryMovementIntegrationTest extends PostgresIntegrationTest {
                         "reason",
                         "Count correction"),
                 400);
-        call("POST", "/api/v1/movements/return", worker, stock(north, BigDecimal.ONE), 201);
-        assertThat(balance(north)).isEqualByComparingTo("10");
+        executeHttpRequestAndAssertStatus("POST", "/api/v1/movements/return", worker, createStockMovementRequestBody(north, BigDecimal.ONE), 201);
+        assertThat(getFixtureProductTotalStockInWarehouse(north)).isEqualByComparingTo("10");
     }
 
     @Test
-    void explicitLocationWorksWhenDefaultIsInactive() throws Exception {
+    void receiptAcceptsActiveExplicitLocationWhenDefaultIsInactiveAndRejectsForeignLocation() throws Exception {
         long other =
                 jdbc.queryForObject(
                         "insert into warehouse_location(warehouse_id,code) values (?,'BIN-A')"
@@ -117,38 +117,38 @@ class InventoryMovementIntegrationTest extends PostgresIntegrationTest {
                         Long.class,
                         north);
         jdbc.update("update warehouse_location set active=false where id=?", northLocation);
-        var input = new HashMap<>(stock(north, BigDecimal.ONE));
+        var input = new HashMap<>(createStockMovementRequestBody(north, BigDecimal.ONE));
         input.put("locationId", other);
-        call("POST", "/api/v1/movements/receipt", admin, input, 201);
-        assertThat(balance(north)).isEqualByComparingTo("1");
+        executeHttpRequestAndAssertStatus("POST", "/api/v1/movements/receipt", admin, input, 201);
+        assertThat(getFixtureProductTotalStockInWarehouse(north)).isEqualByComparingTo("1");
         input.put("locationId", southLocation);
-        call("POST", "/api/v1/movements/receipt", admin, input, 404);
+        executeHttpRequestAndAssertStatus("POST", "/api/v1/movements/receipt", admin, input, 404);
     }
 
     @Test
-    void transferMovesStockInTwoLinkedAuditedLegs() throws Exception {
-        receipt(BigDecimal.TEN);
+    void transferUpdatesBothBalancesAndLinksMovementsHiddenFromPartiallyScopedUser() throws Exception {
+        postNorthWarehouseReceiptAndReturnMovement(BigDecimal.TEN);
         var result =
-                json(call("POST", "/api/v1/transfers", admin, transfer(new BigDecimal("4")), 201));
-        assertThat(balance(north)).isEqualByComparingTo("6");
-        assertThat(balance(south)).isEqualByComparingTo("4");
+                parseHttpResponseJson(executeHttpRequestAndAssertStatus("POST", "/api/v1/transfers", admin, createNorthToSouthTransferRequestBody(new BigDecimal("4")), 201));
+        assertThat(getFixtureProductTotalStockInWarehouse(north)).isEqualByComparingTo("6");
+        assertThat(getFixtureProductTotalStockInWarehouse(south)).isEqualByComparingTo("4");
         assertThat(result.path("movements").size()).isEqualTo(2);
         assertThat(result.path("movements").get(0).path("transferGroupId").asText())
                 .isEqualTo(result.path("movements").get(1).path("transferGroupId").asText());
-        call(
+        executeHttpRequestAndAssertStatus(
                 "GET",
                 "/api/v1/movements/" + result.path("movements").get(0).path("id").asText(),
                 worker,
                 null,
                 403);
         var visible =
-                json(call("GET", "/api/v1/movements?productId=" + product, worker, null, 200));
+                parseHttpResponseJson(executeHttpRequestAndAssertStatus("GET", "/api/v1/movements?productId=" + product, worker, null, 200));
         assertThat(visible.path("totalElements").asInt()).isEqualTo(1);
     }
 
     @Test
     void failedTransferRollsBackBothSidesAfterSourceWasUpdated() throws Exception {
-        receipt(BigDecimal.TEN);
+        postNorthWarehouseReceiptAndReturnMovement(BigDecimal.TEN);
         BigDecimal max = new BigDecimal("999999999999999.9999");
         jdbc.update(
                 "insert into inventory_balance(product_id,warehouse_location_id,quantity) values"
@@ -156,38 +156,38 @@ class InventoryMovementIntegrationTest extends PostgresIntegrationTest {
                 product,
                 southLocation,
                 max);
-        int movements = count("stock_movement"),
-                audits = count("stock_movement_audit"),
-                events = count("audit_event");
-        call("POST", "/api/v1/transfers", admin, transfer(BigDecimal.ONE), 409);
-        assertThat(balance(north)).isEqualByComparingTo("10");
-        assertThat(balance(south)).isEqualByComparingTo(max);
-        assertThat(count("stock_movement")).isEqualTo(movements);
-        assertThat(count("stock_movement_audit")).isEqualTo(audits);
-        assertThat(count("audit_event")).isEqualTo(events);
+        int movements = countRowsInTable("stock_movement"),
+                audits = countRowsInTable("stock_movement_audit"),
+                events = countRowsInTable("audit_event");
+        executeHttpRequestAndAssertStatus("POST", "/api/v1/transfers", admin, createNorthToSouthTransferRequestBody(BigDecimal.ONE), 409);
+        assertThat(getFixtureProductTotalStockInWarehouse(north)).isEqualByComparingTo("10");
+        assertThat(getFixtureProductTotalStockInWarehouse(south)).isEqualByComparingTo(max);
+        assertThat(countRowsInTable("stock_movement")).isEqualTo(movements);
+        assertThat(countRowsInTable("stock_movement_audit")).isEqualTo(audits);
+        assertThat(countRowsInTable("audit_event")).isEqualTo(events);
     }
 
     @Test
     void transferInsufficientAndSameWarehouseFailWithoutChanges() throws Exception {
-        receipt(BigDecimal.ONE);
-        call("POST", "/api/v1/transfers", admin, transfer(BigDecimal.TEN), 409);
-        var input = new HashMap<>(transfer(BigDecimal.ONE));
+        postNorthWarehouseReceiptAndReturnMovement(BigDecimal.ONE);
+        executeHttpRequestAndAssertStatus("POST", "/api/v1/transfers", admin, createNorthToSouthTransferRequestBody(BigDecimal.TEN), 409);
+        var input = new HashMap<>(createNorthToSouthTransferRequestBody(BigDecimal.ONE));
         input.put("destinationWarehouseId", north);
-        call("POST", "/api/v1/transfers", admin, input, 400);
-        assertThat(balance(north)).isEqualByComparingTo("1");
-        assertThat(balance(south)).isZero();
+        executeHttpRequestAndAssertStatus("POST", "/api/v1/transfers", admin, input, 400);
+        assertThat(getFixtureProductTotalStockInWarehouse(north)).isEqualByComparingTo("1");
+        assertThat(getFixtureProductTotalStockInWarehouse(south)).isZero();
     }
 
     @Test
-    void concurrentIssuesCannotOversell() throws Exception {
-        receipt(BigDecimal.TEN);
+    void concurrentStockIssuesCannotConsumeMoreThanAvailableStock() throws Exception {
+        postNorthWarehouseReceiptAndReturnMovement(BigDecimal.TEN);
         var statuses =
-                race(
+                executeTwoPostRequestsConcurrentlyAndReturnStatuses(
                         "/api/v1/movements/issue",
-                        stock(north, new BigDecimal("8")),
-                        stock(north, new BigDecimal("8")));
+                        createStockMovementRequestBody(north, new BigDecimal("8")),
+                        createStockMovementRequestBody(north, new BigDecimal("8")));
         assertThat(statuses).containsExactlyInAnyOrder(201, 409);
-        assertThat(balance(north)).isEqualByComparingTo("2");
+        assertThat(getFixtureProductTotalStockInWarehouse(north)).isEqualByComparingTo("2");
         assertThat(
                         jdbc.queryForObject(
                                 "select count(*) from stock_movement m join stock_movement_line l"
@@ -199,14 +199,14 @@ class InventoryMovementIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
-    void concurrentReceiptsCreateOneMissingBalanceAndPreserveBothAdds() throws Exception {
+    void concurrentReceiptsCreateOneMissingBalanceAndPreserveBothQuantityIncreases() throws Exception {
         assertThat(
-                        race(
+                        executeTwoPostRequestsConcurrentlyAndReturnStatuses(
                                 "/api/v1/movements/receipt",
-                                stock(north, new BigDecimal("3")),
-                                stock(north, new BigDecimal("7"))))
+                                createStockMovementRequestBody(north, new BigDecimal("3")),
+                                createStockMovementRequestBody(north, new BigDecimal("7"))))
                 .containsExactly(201, 201);
-        assertThat(balance(north)).isEqualByComparingTo("10");
+        assertThat(getFixtureProductTotalStockInWarehouse(north)).isEqualByComparingTo("10");
         assertThat(
                         jdbc.queryForObject(
                                 "select count(*) from inventory_balance where product_id=? and"
@@ -218,9 +218,9 @@ class InventoryMovementIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
-    void oppositeTransfersFinishWithoutDeadlock() throws Exception {
-        receipt(BigDecimal.TEN);
-        call("POST", "/api/v1/movements/receipt", admin, stock(south, BigDecimal.TEN), 201);
+    void concurrentOppositeTransfersBothSucceedAndPreserveWarehouseBalances() throws Exception {
+        postNorthWarehouseReceiptAndReturnMovement(BigDecimal.TEN);
+        executeHttpRequestAndAssertStatus("POST", "/api/v1/movements/receipt", admin, createStockMovementRequestBody(south, BigDecimal.TEN), 201);
         var reverse =
                 Map.of(
                         "sourceWarehouseId",
@@ -231,17 +231,72 @@ class InventoryMovementIntegrationTest extends PostgresIntegrationTest {
                         product,
                         "quantity",
                         3);
-        assertThat(race("/api/v1/transfers", transfer(new BigDecimal("3")), reverse))
-                .containsExactly(201, 201);
-        assertThat(balance(north)).isEqualByComparingTo("10");
-        assertThat(balance(south)).isEqualByComparingTo("10");
+        // Queue the forward request first at the lower StockKey. A reversed lock order
+        // lets the reverse request hold the higher row, producing a deadlock on release.
+        try (var pool = Executors.newFixedThreadPool(2)) {
+            Future<Integer> forward;
+            Future<Integer> backward;
+            try (var blocker = dataSource.getConnection()) {
+                blocker.setAutoCommit(false);
+                try (var lock = blocker.prepareStatement(
+                        "select id from inventory_balance where product_id=?"
+                                + " and warehouse_location_id=? for update")) {
+                    lock.setLong(1, product);
+                    lock.setLong(2, Math.min(northLocation, southLocation));
+                    try (var row = lock.executeQuery()) {
+                        assertThat(row.next()).isTrue();
+                    }
+                }
+                forward = pool.submit(() -> executePostRequestAndReturnStatus(
+                        "/api/v1/transfers", createNorthToSouthTransferRequestBody(new BigDecimal("3"))));
+                awaitBlockedDatabaseStatements("inventory_balance", 1);
+                backward = pool.submit(() -> executePostRequestAndReturnStatus("/api/v1/transfers", reverse));
+                awaitBlockedDatabaseStatements("inventory_balance", 2);
+                blocker.rollback();
+            }
+            assertThat(List.of(forward.get(15, TimeUnit.SECONDS), backward.get(15, TimeUnit.SECONDS)))
+                    .containsExactly(201, 201);
+        }
+        assertThat(getFixtureProductTotalStockInWarehouse(north)).isEqualByComparingTo("10");
+        assertThat(getFixtureProductTotalStockInWarehouse(south)).isEqualByComparingTo("10");
+        var groups = jdbc.queryForList(
+                "select m.transfer_group_id,m.source_warehouse_id,m.target_warehouse_id,"
+                        + " count(*) legs, count(*) filter(where m.movement_type='TRANSFER_OUT') outbound,"
+                        + " count(*) filter(where m.movement_type='TRANSFER_IN') inbound"
+                        + " from stock_movement m join stock_movement_line l on l.movement_id=m.id"
+                        + " where l.product_id=? and m.transfer_group_id is not null"
+                        + " group by m.transfer_group_id,m.source_warehouse_id,m.target_warehouse_id",
+                product);
+        assertThat(groups).hasSize(2);
+        assertThat(groups).extracting(row -> row.get("source_warehouse_id"), row -> row.get("target_warehouse_id"))
+                .containsExactlyInAnyOrder(tuple(north, south), tuple(south, north));
+        for (var group : groups) {
+            assertThat(group.get("legs")).isEqualTo(2L);
+            assertThat(group.get("outbound")).isEqualTo(1L);
+            assertThat(group.get("inbound")).isEqualTo(1L);
+        }
+        assertThat(jdbc.queryForObject(
+                "select count(*) from stock_movement m join stock_movement_line l on l.movement_id=m.id"
+                        + " join warehouse_location source on source.warehouse_id=m.source_warehouse_id"
+                        + " join warehouse_location target on target.warehouse_id=m.target_warehouse_id"
+                        + " where l.product_id=? and m.transfer_group_id is not null"
+                        + " and m.status='POSTED' and m.created_by=? and m.posted_by=? and l.quantity=3"
+                        + " and ((m.movement_type='TRANSFER_OUT' and l.source_location_id=source.id"
+                        + " and l.target_location_id is null) or (m.movement_type='TRANSFER_IN'"
+                        + " and l.source_location_id is null and l.target_location_id=target.id))",
+                Integer.class, product, adminId, adminId)).isEqualTo(4);
+        assertThat(jdbc.queryForObject(
+                "select count(*) from stock_movement_audit a join stock_movement m on m.id=a.movement_id"
+                        + " join stock_movement_line l on l.movement_id=m.id"
+                        + " where l.product_id=? and m.transfer_group_id is not null and a.actor_user_id=?",
+                Integer.class, product, adminId)).isEqualTo(8);
     }
 
     @Test
     void insertAndPostingUpdateAuditCaptureAuthenticatedActorAndSnapshots() throws Exception {
-        String id = receipt(BigDecimal.ONE).path("id").asText();
+        String id = postNorthWarehouseReceiptAndReturnMovement(BigDecimal.ONE).path("id").asText();
         var audits =
-                json(call("GET", "/api/v1/audit/movements/" + id, admin, null, 200))
+                parseHttpResponseJson(executeHttpRequestAndAssertStatus("GET", "/api/v1/audit/movements/" + id, admin, null, 200))
                         .path("content");
         assertThat(audits.size()).isEqualTo(2);
         for (var row : audits) {
@@ -266,7 +321,7 @@ class InventoryMovementIntegrationTest extends PostgresIntegrationTest {
                 statement.setString(1, Long.toString(adminId));
                 statement.execute();
             }
-            draft(connection, first);
+            insertDraftReceiptMovementUsingConnection(connection, first);
             try (var statement =
                     connection.prepareStatement(
                             "update stock_movement set reason='Changed draft' where id=?")) {
@@ -279,7 +334,7 @@ class InventoryMovementIntegrationTest extends PostgresIntegrationTest {
                 statement.executeUpdate();
             }
             connection.commit();
-            draft(connection, second);
+            insertDraftReceiptMovementUsingConnection(connection, second);
             connection.commit();
             connection.setAutoCommit(true);
         }
@@ -307,7 +362,7 @@ class InventoryMovementIntegrationTest extends PostgresIntegrationTest {
                 .isTrue();
     }
 
-    private void draft(Connection connection, UUID id) throws Exception {
+    private void insertDraftReceiptMovementUsingConnection(Connection connection, UUID id) throws Exception {
         try (var statement =
                 connection.prepareStatement(
                         "insert into"
@@ -323,7 +378,7 @@ class InventoryMovementIntegrationTest extends PostgresIntegrationTest {
 
     @Test
     void postedHeadersAndLinesRejectSilentMutationAtDatabase() throws Exception {
-        UUID id = UUID.fromString(receipt(BigDecimal.ONE).path("id").asText());
+        UUID id = UUID.fromString(postNorthWarehouseReceiptAndReturnMovement(BigDecimal.ONE).path("id").asText());
         assertThatThrownBy(
                         () ->
                                 jdbc.update(
@@ -354,33 +409,33 @@ class InventoryMovementIntegrationTest extends PostgresIntegrationTest {
                                         product,
                                         northLocation))
                 .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
-        assertThat(balance(north)).isEqualByComparingTo("1");
+        assertThat(getFixtureProductTotalStockInWarehouse(north)).isEqualByComparingTo("1");
     }
 
     @Test
     void compensationPreservesOriginalAndCanOnlyBePostedOnce() throws Exception {
-        var original = receipt(BigDecimal.TEN);
+        var original = postNorthWarehouseReceiptAndReturnMovement(BigDecimal.TEN);
         String id = original.path("id").asText();
         var corrected =
-                json(
-                        call(
+                parseHttpResponseJson(
+                        executeHttpRequestAndAssertStatus(
                                 "POST",
                                 "/api/v1/movements/" + id + "/compensate",
                                 admin,
                                 Map.of("reason", "Duplicate delivery"),
                                 201));
-        assertThat(balance(north)).isZero();
+        assertThat(getFixtureProductTotalStockInWarehouse(north)).isZero();
         assertThat(corrected.path("movements").get(0).path("compensatesMovementId").asText())
                 .isEqualTo(id);
-        var after = json(call("GET", "/api/v1/movements/" + id, admin, null, 200));
+        var after = parseHttpResponseJson(executeHttpRequestAndAssertStatus("GET", "/api/v1/movements/" + id, admin, null, 200));
         assertThat(after).isEqualTo(original);
-        call(
+        executeHttpRequestAndAssertStatus(
                 "POST",
                 "/api/v1/movements/" + id + "/compensate",
                 admin,
                 Map.of("reason", "Again"),
                 409);
-        call(
+        executeHttpRequestAndAssertStatus(
                 "POST",
                 "/api/v1/movements/"
                         + corrected.path("movements").get(0).path("id").asText()
@@ -388,33 +443,33 @@ class InventoryMovementIntegrationTest extends PostgresIntegrationTest {
                 admin,
                 Map.of("reason", "Again"),
                 409);
-        assertThat(balance(north)).isZero();
+        assertThat(getFixtureProductTotalStockInWarehouse(north)).isZero();
     }
 
     @Test
-    void compensationOfTransferReversesBothLegsAtomically() throws Exception {
-        receipt(BigDecimal.TEN);
+    void compensatingTransferCreatesTwoReversingMovementsAndRestoresBothBalances() throws Exception {
+        postNorthWarehouseReceiptAndReturnMovement(BigDecimal.TEN);
         var transfer =
-                json(call("POST", "/api/v1/transfers", admin, transfer(new BigDecimal("4")), 201));
+                parseHttpResponseJson(executeHttpRequestAndAssertStatus("POST", "/api/v1/transfers", admin, createNorthToSouthTransferRequestBody(new BigDecimal("4")), 201));
         String out = transfer.path("movements").get(0).path("id").asText();
         var corrected =
-                json(
-                        call(
+                parseHttpResponseJson(
+                        executeHttpRequestAndAssertStatus(
                                 "POST",
                                 "/api/v1/movements/" + out + "/compensate",
                                 admin,
                                 Map.of("reason", "Wrong warehouse"),
                                 201));
         assertThat(corrected.path("movements").size()).isEqualTo(2);
-        assertThat(balance(north)).isEqualByComparingTo("10");
-        assertThat(balance(south)).isZero();
+        assertThat(getFixtureProductTotalStockInWarehouse(north)).isEqualByComparingTo("10");
+        assertThat(getFixtureProductTotalStockInWarehouse(south)).isZero();
     }
 
-    private int count(String table) {
+    private int countRowsInTable(String table) {
         return jdbc.queryForObject("select count(*) from " + table, Integer.class);
     }
 
-    List<Integer> race(String endpoint, Object first, Object second) throws Exception {
+    List<Integer> executeTwoPostRequestsConcurrentlyAndReturnStatuses(String endpoint, Object first, Object second) throws Exception {
         var ready = new CountDownLatch(2);
         var go = new CountDownLatch(1);
         try (var pool = Executors.newFixedThreadPool(2)) {
@@ -427,19 +482,7 @@ class InventoryMovementIntegrationTest extends PostgresIntegrationTest {
                                     if (!go.await(10, TimeUnit.SECONDS)) {
                                         throw new IllegalStateException("Race start timeout");
                                     }
-                                    return mvc.perform(
-                                                    org.springframework.test.web.servlet.request
-                                                            .MockMvcRequestBuilders.post(endpoint)
-                                                            .header(
-                                                                    "Authorization",
-                                                                    "Bearer " + admin)
-                                                            .contentType("application/json")
-                                                            .content(
-                                                                    mapper.writeValueAsString(
-                                                                            body)))
-                                            .andReturn()
-                                            .getResponse()
-                                            .getStatus();
+                                    return executePostRequestAndReturnStatus(endpoint, body);
                                 }));
             }
             assertThat(ready.await(10, TimeUnit.SECONDS)).isTrue();
@@ -448,5 +491,12 @@ class InventoryMovementIntegrationTest extends PostgresIntegrationTest {
                     futures.get(0).get(15, TimeUnit.SECONDS),
                     futures.get(1).get(15, TimeUnit.SECONDS));
         }
+    }
+
+    private int executePostRequestAndReturnStatus(String endpoint, Object body) throws Exception {
+        return mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post(endpoint)
+                        .header("Authorization", "Bearer " + admin)
+                        .contentType("application/json").content(mapper.writeValueAsString(body)))
+                .andReturn().getResponse().getStatus();
     }
 }

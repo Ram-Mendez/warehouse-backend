@@ -68,12 +68,12 @@ public class DevDataInitializer implements ApplicationRunner {
                         + " nothing",
                     sku);
         }
-        user("admin", "Admin-local-2026!", "ROLE_ADMIN", true);
-        user("manager", "Manager-local-2026!", "ROLE_MANAGER", true);
-        user("worker", "Worker-local-2026!", "ROLE_OPERATOR", false);
+        createDemoUserWithRoleAndWarehouseScopesIfAbsent("admin", "Admin-local-2026!", "ROLE_ADMIN", true);
+        createDemoUserWithRoleAndWarehouseScopesIfAbsent("manager", "Manager-local-2026!", "ROLE_MANAGER", true);
+        createDemoUserWithRoleAndWarehouseScopesIfAbsent("worker", "Worker-local-2026!", "ROLE_OPERATOR", false);
     }
 
-    private void user(String username, String password, String role, boolean both) {
+    private void createDemoUserWithRoleAndWarehouseScopesIfAbsent(String username, String password, String role, boolean both) {
         var inserted =
                 jdbc.query(
                         "insert into security_user(username,email,password_hash) values (?,?,?) on"

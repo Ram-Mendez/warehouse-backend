@@ -24,8 +24,8 @@ public class SupplierController {
     }
 
     @GetMapping("/{id}")
-    public SupplierDtos.Response get(@PathVariable long id) {
-        return service.get(id);
+    public SupplierDtos.Response getSupplier(@PathVariable long id) {
+        return service.getSupplier(id);
     }
 
     @PostMapping

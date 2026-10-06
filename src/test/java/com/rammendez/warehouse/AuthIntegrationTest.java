@@ -13,7 +13,7 @@ class AuthIntegrationTest extends PostgresIntegrationTest {
     @Autowired javax.sql.DataSource dataSource;
 
     @Test
-    void loginWaitsForConcurrentPasswordChangeBeforeCheckingCredentials() throws Exception {
+    void loginWaitsForConcurrentPasswordChangeAndRejectsPreviousPassword() throws Exception {
         String replacement =
                 new org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder(12)
                         .encode("Replacement-password-2026!");
@@ -74,8 +74,8 @@ class AuthIntegrationTest extends PostgresIntegrationTest {
     @Autowired JwtDecoder decoder;
 
     @Test
-    void loginIssuesFortyFiveMinuteJwtAndHashOnlyRefresh() throws Exception {
-        var tokens = login(adminName);
+    void loginIssuesFortyFiveMinuteAccessJwtAndStoresOnlyRefreshTokenHashes() throws Exception {
+        var tokens = loginFixtureUserAndReturnTokens(adminName);
         String raw = tokens.path("refreshToken").asText();
         assertThat(java.util.Base64.getUrlDecoder().decode(raw)).hasSize(48);
         var jwt = decoder.decode(tokens.path("accessToken").asText());
@@ -89,18 +89,18 @@ class AuthIntegrationTest extends PostgresIntegrationTest {
                                 String.class,
                                 jwt.getClaimAsString("sid")))
                 .allMatch(hash -> hash.matches("[0-9a-f]{64}") && !hash.equals(raw));
-        call("GET", "/api/v1/auth/me", tokens.path("accessToken").asText(), null, 200);
+        executeHttpRequestAndAssertStatus("GET", "/api/v1/auth/me", tokens.path("accessToken").asText(), null, 200);
     }
 
     @Test
     void badPasswordAndMissingUserAreUnauthorized() throws Exception {
-        call(
+        executeHttpRequestAndAssertStatus(
                 "POST",
                 "/api/v1/auth/login",
                 null,
                 Map.of("username", adminName, "password", "bad-password"),
                 401);
-        call(
+        executeHttpRequestAndAssertStatus(
                 "POST",
                 "/api/v1/auth/login",
                 null,
@@ -109,25 +109,25 @@ class AuthIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
-    void protectedEndpointRequiresJwt() throws Exception {
-        call("GET", "/api/v1/products", null, null, 401);
-        call("GET", "/api/v1/products", "bad.jwt.value", null, 401);
+    void productListingRejectsMissingOrMalformedJwt() throws Exception {
+        executeHttpRequestAndAssertStatus("GET", "/api/v1/products", null, null, 401);
+        executeHttpRequestAndAssertStatus("GET", "/api/v1/products", "bad.jwt.value", null, 401);
     }
 
     @Test
-    void refreshRotatesTwiceAndConsumesParents() throws Exception {
-        var r1 = login(adminName);
+    void refreshingTwiceIssuesNewTokensAndMarksBothParentTokensUsed() throws Exception {
+        var r1 = loginFixtureUserAndReturnTokens(adminName);
         var r2 =
-                json(
-                        call(
+                parseHttpResponseJson(
+                        executeHttpRequestAndAssertStatus(
                                 "POST",
                                 "/api/v1/auth/refresh",
                                 null,
                                 Map.of("refreshToken", r1.path("refreshToken").asText()),
                                 200));
         var r3 =
-                json(
-                        call(
+                parseHttpResponseJson(
+                        executeHttpRequestAndAssertStatus(
                                 "POST",
                                 "/api/v1/auth/refresh",
                                 null,
@@ -145,31 +145,31 @@ class AuthIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
-    void reuseRevokesCompleteFamilyAndCommitsBeforeUnauthorized() throws Exception {
-        var r1 = login(adminName);
+    void reusingFirstRefreshTokenRevokesSessionAndRejectsLatestRefreshToken() throws Exception {
+        var r1 = loginFixtureUserAndReturnTokens(adminName);
         var r2 =
-                json(
-                        call(
+                parseHttpResponseJson(
+                        executeHttpRequestAndAssertStatus(
                                 "POST",
                                 "/api/v1/auth/refresh",
                                 null,
                                 Map.of("refreshToken", r1.path("refreshToken").asText()),
                                 200));
         var r3 =
-                json(
-                        call(
+                parseHttpResponseJson(
+                        executeHttpRequestAndAssertStatus(
                                 "POST",
                                 "/api/v1/auth/refresh",
                                 null,
                                 Map.of("refreshToken", r2.path("refreshToken").asText()),
                                 200));
-        call(
+        executeHttpRequestAndAssertStatus(
                 "POST",
                 "/api/v1/auth/refresh",
                 null,
                 Map.of("refreshToken", r1.path("refreshToken").asText()),
                 401);
-        call(
+        executeHttpRequestAndAssertStatus(
                 "POST",
                 "/api/v1/auth/refresh",
                 null,
@@ -185,31 +185,31 @@ class AuthIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
-    void logoutRevokesRefreshButAccessNaturallyExpires() throws Exception {
-        var tokens = login(adminName);
+    void logoutRejectsRefreshTokenWhileExistingAccessJwtRemainsUsable() throws Exception {
+        var tokens = loginFixtureUserAndReturnTokens(adminName);
         String access = tokens.path("accessToken").asText();
-        call("POST", "/api/v1/auth/logout", access, null, 204);
-        call(
+        executeHttpRequestAndAssertStatus("POST", "/api/v1/auth/logout", access, null, 204);
+        executeHttpRequestAndAssertStatus(
                 "POST",
                 "/api/v1/auth/refresh",
                 null,
                 Map.of("refreshToken", tokens.path("refreshToken").asText()),
                 401);
-        call("GET", "/api/v1/auth/me", access, null, 200);
+        executeHttpRequestAndAssertStatus("GET", "/api/v1/auth/me", access, null, 200);
     }
 
     @Test
-    void disabledAndLockedAccountsCannotAuthenticateOrUseOldJwt() throws Exception {
+    void disabledUserCannotLoginAndDisabledOrLockedUsersCannotUseExistingJwt() throws Exception {
         jdbc.update("update security_user set enabled=false where id=?", workerId);
-        call(
+        executeHttpRequestAndAssertStatus(
                 "POST",
                 "/api/v1/auth/login",
                 null,
                 Map.of("username", workerName, "password", PASSWORD),
                 401);
-        call("GET", "/api/v1/products", worker, null, 401);
+        executeHttpRequestAndAssertStatus("GET", "/api/v1/products", worker, null, 401);
         jdbc.update("update security_user set locked=true where id=?", managerId);
-        call("GET", "/api/v1/products", manager, null, 401);
+        executeHttpRequestAndAssertStatus("GET", "/api/v1/products", manager, null, 401);
     }
 
     @Test
@@ -217,19 +217,19 @@ class AuthIntegrationTest extends PostgresIntegrationTest {
         var key = decoder.decode(admin);
         // An expired token and wrong issuer are signed through the configured encoder in a separate
         // helper.
-        call(
+        executeHttpRequestAndAssertStatus(
                 "GET",
                 "/api/v1/auth/me",
-                signed(
+                createSignedJwtWithIssuerAndExpiry(
                         key.getSubject(),
                         "warehouse-backend",
                         java.time.Instant.now().minusSeconds(120)),
                 null,
                 401);
-        call(
+        executeHttpRequestAndAssertStatus(
                 "GET",
                 "/api/v1/auth/me",
-                signed(key.getSubject(), "other-issuer", java.time.Instant.now().plusSeconds(100)),
+                createSignedJwtWithIssuerAndExpiry(key.getSubject(), "other-issuer", java.time.Instant.now().plusSeconds(100)),
                 null,
                 401);
     }
@@ -238,19 +238,19 @@ class AuthIntegrationTest extends PostgresIntegrationTest {
 
     @Test
     void refreshAndPublicContactIgnoreExpiredAccessHeader() throws Exception {
-        var tokens = login(adminName);
+        var tokens = loginFixtureUserAndReturnTokens(adminName);
         String expired =
-                signed(
+                createSignedJwtWithIssuerAndExpiry(
                         Long.toString(adminId),
                         "warehouse-backend",
                         java.time.Instant.now().minusSeconds(120));
-        call(
+        executeHttpRequestAndAssertStatus(
                 "POST",
                 "/api/v1/auth/refresh",
                 expired,
                 Map.of("refreshToken", tokens.path("refreshToken").asText()),
                 200);
-        call(
+        executeHttpRequestAndAssertStatus(
                 "POST",
                 "/api/v1/contact",
                 expired,
@@ -267,8 +267,8 @@ class AuthIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
-    void concurrentRefreshHasOneSuccessAndReuseRevokesWinner() throws Exception {
-        var tokens = login(adminName);
+    void concurrentUseOfSameRefreshTokenHasOneSuccessAndRevokesIssuedRefreshToken() throws Exception {
+        var tokens = loginFixtureUserAndReturnTokens(adminName);
         var ready = new java.util.concurrent.CountDownLatch(2);
         var start = new java.util.concurrent.CountDownLatch(1);
         try (var pool = java.util.concurrent.Executors.newFixedThreadPool(2)) {
@@ -298,8 +298,8 @@ class AuthIntegrationTest extends PostgresIntegrationTest {
             var b = second.get(15, java.util.concurrent.TimeUnit.SECONDS);
             assertThat(java.util.List.of(a.getResponse().getStatus(), b.getResponse().getStatus()))
                     .containsExactlyInAnyOrder(200, 401);
-            var winner = json(a.getResponse().getStatus() == 200 ? a : b);
-            call(
+            var winner = parseHttpResponseJson(a.getResponse().getStatus() == 200 ? a : b);
+            executeHttpRequestAndAssertStatus(
                     "POST",
                     "/api/v1/auth/refresh",
                     null,
@@ -308,7 +308,7 @@ class AuthIntegrationTest extends PostgresIntegrationTest {
         }
     }
 
-    private String signed(String subject, String issuer, java.time.Instant expires) {
+    private String createSignedJwtWithIssuerAndExpiry(String subject, String issuer, java.time.Instant expires) {
         var claims =
                 org.springframework.security.oauth2.jwt.JwtClaimsSet.builder()
                         .subject(subject)

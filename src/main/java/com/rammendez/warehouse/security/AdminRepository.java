@@ -18,7 +18,7 @@ public class AdminRepository {
     }
 
     public void lockUser(long id) {
-        Sql.one(
+        Sql.firstRowOrThrowNotFound(
                 jdbc.query(
                         "select id from security_user where id=? for update",
                         (r, n) -> r.getLong(1),
@@ -26,8 +26,8 @@ public class AdminRepository {
                 "User");
     }
 
-    public AdminDtos.UserResponse get(long id) {
-        var user = users.byId(id).orElseThrow(() -> BusinessException.missing("User"));
+    public AdminDtos.UserResponse getUserWithRolesAndWarehouseScopes(long id) {
+        var user = users.findUserById(id).orElseThrow(() -> BusinessException.missing("User"));
         var scopes =
                 jdbc.query(
                         "select * from security_user_warehouse_scope where user_id=? order by"
@@ -43,12 +43,12 @@ public class AdminRepository {
                 user.email(),
                 user.enabled(),
                 user.locked(),
-                users.roles(id),
+                users.findUserRoleCodes(id),
                 scopes);
     }
 
-    public PageResponse<AdminDtos.UserSummary> list(int page, int size) {
-        int offset = PageResponse.offset(page, size);
+    public PageResponse<AdminDtos.UserSummary> listUserSummaries(int page, int size) {
+        int offset = PageResponse.validatePageBoundsAndCalculateOffset(page, size);
         return new PageResponse<>(
                 jdbc.query(
                         "select id,username,email,enabled,locked from security_user order by id"
@@ -67,7 +67,7 @@ public class AdminRepository {
                 size);
     }
 
-    public long insert(AdminDtos.Create input, String hash) {
+    public long insertUserWithPasswordHash(AdminDtos.Create input, String hash) {
         return jdbc.queryForObject(
                 "insert into security_user(username,email,password_hash) values (?,?,?) returning"
                         + " id",
@@ -77,7 +77,7 @@ public class AdminRepository {
                 hash);
     }
 
-    public void update(long id, AdminDtos.Update input, String hash) {
+    public void updateUserAdvanceAuthVersionAndRevokeSessions(long id, AdminDtos.Update input, String hash) {
         jdbc.update(
                 "update security_user set"
                     + " email=coalesce(?,email),enabled=coalesce(?,enabled),locked=coalesce(?,locked),password_hash=coalesce(?,password_hash),auth_version=auth_version+1,updated_at=now()"
@@ -87,10 +87,10 @@ public class AdminRepository {
                 input.locked(),
                 hash,
                 id);
-        revoke(id);
+        revokeAllUserAuthSessionsAndRefreshTokens(id);
     }
 
-    public void roles(long id, List<Long> roleIds) {
+    public void replaceUserRolesAdvanceAuthVersionAndRevokeSessions(long id, List<Long> roleIds) {
         jdbc.update("delete from security_user_role where user_id=?", id);
         for (long roleId : roleIds) {
             jdbc.update("insert into security_user_role(user_id,role_id) values (?,?)", id, roleId);
@@ -98,10 +98,10 @@ public class AdminRepository {
         jdbc.update(
                 "update security_user set auth_version=auth_version+1,updated_at=now() where id=?",
                 id);
-        revoke(id);
+        revokeAllUserAuthSessionsAndRefreshTokens(id);
     }
 
-    public void scopes(long id, List<AdminDtos.Scope> scopes) {
+    public void replaceUserWarehouseScopes(long id, List<AdminDtos.Scope> scopes) {
         jdbc.update("delete from security_user_warehouse_scope where user_id=?", id);
         for (var scope : scopes) {
             jdbc.update(
@@ -113,7 +113,7 @@ public class AdminRepository {
         }
     }
 
-    public List<AdminDtos.Role> roles() {
+    public List<AdminDtos.Role> listAvailableRoles() {
         return jdbc.query(
                 "select * from security_role order by code",
                 (r, n) ->
@@ -121,7 +121,7 @@ public class AdminRepository {
                                 r.getLong("id"), r.getString("code"), r.getString("description")));
     }
 
-    private void revoke(long id) {
+    private void revokeAllUserAuthSessionsAndRefreshTokens(long id) {
         jdbc.update(
                 "update auth_session set revoked_at=coalesce(revoked_at,now()) where user_id=?",
                 id);

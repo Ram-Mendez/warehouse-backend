@@ -24,42 +24,42 @@ public class CategoryService {
     }
 
     @PreAuthorize("hasAuthority('PERM_CATEGORY_READ')")
-    public CategoryDtos.Response get(long id) {
-        return repository.get(id);
+    public CategoryDtos.Response getCategory(long id) {
+        return repository.getCategory(id);
     }
 
     @Transactional
     @PreAuthorize("hasAuthority('PERM_CATEGORY_WRITE')")
     public CategoryDtos.Response create(CategoryDtos.Input input) {
         repository.lockHierarchy();
-        validateParent(input.parentId(), null);
+        validateOptionalCategoryParentAndRejectHierarchyCycles(input.parentId(), null);
         long id = repository.insert(input);
-        audit.event("CATEGORY_CREATED", "category", id);
-        return repository.get(id);
+        audit.recordAuditEventWithActorAndWarehouseReferences("CATEGORY_CREATED", "category", id);
+        return repository.getCategory(id);
     }
 
     @Transactional
     @PreAuthorize("hasAuthority('PERM_CATEGORY_WRITE')")
     public CategoryDtos.Response update(long id, CategoryDtos.Input input) {
         repository.lockHierarchy();
-        repository.get(id);
-        validateParent(input.parentId(), id);
+        repository.getCategory(id);
+        validateOptionalCategoryParentAndRejectHierarchyCycles(input.parentId(), id);
         repository.update(id, input);
-        audit.event("CATEGORY_UPDATED", "category", id);
-        return repository.get(id);
+        audit.recordAuditEventWithActorAndWarehouseReferences("CATEGORY_UPDATED", "category", id);
+        return repository.getCategory(id);
     }
 
-    private void validateParent(Long parentId, Long id) {
+    private void validateOptionalCategoryParentAndRejectHierarchyCycles(Long parentId, Long id) {
         if (parentId == null) {
             return;
         }
-        var parent = repository.get(parentId);
+        var parent = repository.getCategory(parentId);
         java.util.Set<Long> visited = new java.util.HashSet<>();
         while (parent != null) {
             if (!visited.add(parent.id()) || java.util.Objects.equals(id, parent.id())) {
                 throw BusinessException.conflict("Category hierarchy cannot contain a cycle");
             }
-            parent = parent.parentId() == null ? null : repository.get(parent.parentId());
+            parent = parent.parentId() == null ? null : repository.getCategory(parent.parentId());
         }
     }
 }

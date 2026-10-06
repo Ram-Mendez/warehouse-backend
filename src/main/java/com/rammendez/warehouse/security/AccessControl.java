@@ -13,11 +13,11 @@ public class AccessControl {
         this.repository = repository;
     }
 
-    public long userId() {
-        return Long.parseLong(jwt().getToken().getSubject());
+    public long getAuthenticatedUserId() {
+        return Long.parseLong(requireJwtAuthentication().getToken().getSubject());
     }
 
-    public JwtAuthenticationToken jwt() {
+    public JwtAuthenticationToken requireJwtAuthentication() {
         if (!(SecurityContextHolder.getContext().getAuthentication()
                 instanceof JwtAuthenticationToken token)) {
             throw new AccessDeniedException("Authentication required");
@@ -25,14 +25,14 @@ public class AccessControl {
         return token;
     }
 
-    public void permission(String code) {
-        if (jwt().getAuthorities().stream().noneMatch(a -> a.getAuthority().equals(code))) {
+    public void requirePermission(String code) {
+        if (requireJwtAuthentication().getAuthorities().stream().noneMatch(a -> a.getAuthority().equals(code))) {
             throw new AccessDeniedException("Permission denied");
         }
     }
 
-    public void warehouse(long warehouseId, boolean write) {
-        if (!repository.hasScope(userId(), warehouseId, write)) {
+    public void requireWarehouseScope(long warehouseId, boolean write) {
+        if (!repository.hasWarehouseScopeForRequestedAccess(getAuthenticatedUserId(), warehouseId, write)) {
             throw new AccessDeniedException("Warehouse scope denied");
         }
     }

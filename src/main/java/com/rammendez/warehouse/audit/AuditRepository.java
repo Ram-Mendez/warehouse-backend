@@ -40,8 +40,8 @@ public class AuditRepository {
         this.mapper = mapper;
     }
 
-    public PageResponse<MovementAudit> movements(long userId, UUID movementId, int page, int size) {
-        int offset = PageResponse.offset(page, size);
+    public PageResponse<MovementAudit> listMovementAuditHistoryWithinUserScope(long userId, UUID movementId, int page, int size) {
+        int offset = PageResponse.validatePageBoundsAndCalculateOffset(page, size);
         String where = " where 1=1";
         var args = new ArrayList<Object>();
         // Historical and current snapshots each require access to every referenced warehouse.
@@ -81,14 +81,14 @@ public class AuditRepository {
                                         r.getString("operation"),
                                         Sql.nullableLong(r, "actor_user_id"),
                                         r.getString("db_user"),
-                                        json(r.getString("old_row")),
-                                        json(r.getString("new_row")),
-                                        Sql.instant(r, "changed_at")),
+                                        parseNullableAuditJson(r.getString("old_row")),
+                                        parseNullableAuditJson(r.getString("new_row")),
+                                        Sql.readNullableInstant(r, "changed_at")),
                         args.toArray());
         return new PageResponse<>(rows, count, page, size);
     }
 
-    public PageResponse<Event> events(
+    public PageResponse<Event> listAuditEventsWithinUserPermissionsAndScope(
             long userId,
             boolean admin,
             boolean contact,
@@ -96,7 +96,7 @@ public class AuditRepository {
             String entityId,
             int page,
             int size) {
-        int offset = PageResponse.offset(page, size);
+        int offset = PageResponse.validatePageBoundsAndCalculateOffset(page, size);
         String where =
                 " where (warehouse_id is null or exists(select 1 from security_user_warehouse_scope"
                     + " s where s.user_id=? and s.warehouse_id=audit_event.warehouse_id)) and"
@@ -135,13 +135,13 @@ public class AuditRepository {
                                         r.getString("event_type"),
                                         r.getString("entity_type"),
                                         r.getString("entity_id"),
-                                        json(r.getString("event_data")),
-                                        Sql.instant(r, "occurred_at")),
+                                        parseNullableAuditJson(r.getString("event_data")),
+                                        Sql.readNullableInstant(r, "occurred_at")),
                         args.toArray());
         return new PageResponse<>(rows, count, page, size);
     }
 
-    private JsonNode json(String value) {
+    private JsonNode parseNullableAuditJson(String value) {
         return value == null ? null : mapper.readTree(value);
     }
 }
