@@ -20,7 +20,8 @@ public class SupplierService {
 
     @PreAuthorize("hasAuthority('PERM_SUPPLIER_READ')")
     public PageResponse<SupplierDtos.Response> list(int page, int size) {
-        return repository.list(page, size);
+        PageResponse.validatePageBoundsAndCalculateOffset(page, size);
+        return repository.list(0, size);
     }
 
     @PreAuthorize("hasAuthority('PERM_SUPPLIER_READ')")
@@ -52,7 +53,9 @@ public class SupplierService {
         supplier.code = input.code().trim();
         supplier.name = input.name().trim();
         supplier.email = input.email();
-        supplier.phone = input.phone();
+        if (supplier.id == null) {
+            supplier.phone = input.phone();
+        }
         supplier.active = input.active();
     }
 }
