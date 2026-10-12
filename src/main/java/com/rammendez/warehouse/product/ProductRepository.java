@@ -9,10 +9,10 @@ import org.springframework.data.jpa.repository.Query;
 
 public interface ProductRepository extends JpaRepository<Product, Long> {
     @Query("""
-            select p from Product p join Category c on c.id = p.categoryId
+            select p from Product p left join Category c on c.id = p.categoryId
             where (:search is null or lower(p.name) like :search escape '\\'
                    or lower(p.sku) like :search escape '\\')
-              and (:sku is null or p.sku like :sku)
+              and (:sku is null or p.sku = :sku)
               and (:categoryId is null or p.categoryId = :categoryId)
               and (:supplierId is null or exists (
                   select 1 from ProductSupplier ps

@@ -49,9 +49,9 @@ public interface InventoryRepository extends JpaRepository<InventoryBalance, Lon
     }
 
     @Query("""
-            select coalesce(sum(distinct b.quantity), 0) as quantity,
+            select coalesce(sum( b.quantity), 0) as quantity,
                    coalesce(sum(b.reservedQuantity), 0) as reservedQuantity
-            from InventoryBalance b join WarehouseLocation l on l.id = b.locationId
+            from InventoryBalance b  join WarehouseLocation l on l.id = b.locationId
             where l.warehouse.id = :warehouseId and b.productId = :productId
             """)
     StockTotals sumStock(long warehouseId, long productId);
