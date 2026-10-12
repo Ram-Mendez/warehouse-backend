@@ -38,8 +38,15 @@ class PurchaseContactAdminIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
-    void approvedPurchaseReceiptStocksOrderedQuantityOnceAndRejectsRepeatedReceipt() throws Exception {
+    void approvedPurchaseReceiptStocksOrderedQuantityOnceAndRejectsRepeatedReceiptAndCancellation() throws Exception {
         String id = createPurchaseOrderWithOneLineAndReturnId();
+        long secondProduct = parseHttpResponseJson(executeHttpRequestAndAssertStatus(
+                "POST", "/api/v1/products", manager,
+                createProductWithSupplierRequestBody("SECOND-" + suffix, "Second purchase product"), 201))
+                .path("id").asLong();
+        executeHttpRequestAndAssertStatus("POST", "/api/v1/purchase-orders/" + id + "/lines", manager,
+                Map.of("productId", secondProduct, "quantity", new BigDecimal("2.1250"),
+                        "unitCost", new BigDecimal("1.2345")), 200);
         executeHttpRequestAndAssertStatus("POST", "/api/v1/purchase-orders/" + id + "/submit", manager, null, 200);
         executeHttpRequestAndAssertStatus("POST", "/api/v1/purchase-orders/" + id + "/approve", manager, null, 200);
         var received =
@@ -51,11 +58,32 @@ class PurchaseContactAdminIntegrationTest extends PostgresIntegrationTest {
                                 null,
                                 200));
         assertThat(received.path("status").asText()).isEqualTo("RECEIVED");
+        assertThat(received.path("lines").size()).isEqualTo(2);
+        assertThat(received.path("lines").get(0).path("productId").asLong()).isEqualTo(product);
         assertThat(received.path("lines").get(0).path("receivedQuantity").decimalValue())
                 .isEqualByComparingTo("7");
+        assertThat(received.path("lines").get(0).path("unitCost").decimalValue())
+                .isEqualByComparingTo("2.5");
+        assertThat(received.path("lines").get(1).path("productId").asLong()).isEqualTo(secondProduct);
+        assertThat(received.path("lines").get(1).path("orderedQuantity").decimalValue())
+                .isEqualByComparingTo("2.1250");
+        assertThat(received.path("lines").get(1).path("receivedQuantity").decimalValue())
+                .isEqualByComparingTo("2.1250");
+        assertThat(received.path("lines").get(1).path("unitCost").decimalValue())
+                .isEqualByComparingTo("1.2345");
         assertThat(getFixtureProductTotalStockInWarehouse(north)).isEqualByComparingTo("7");
         executeHttpRequestAndAssertStatus("POST", "/api/v1/purchase-orders/" + id + "/receive", manager, null, 409);
+        executeHttpRequestAndAssertStatus("POST", "/api/v1/purchase-orders/" + id + "/cancel", manager, null, 409);
+        var unchanged = parseHttpResponseJson(executeHttpRequestAndAssertStatus(
+                "GET", "/api/v1/purchase-orders/" + id, manager, null, 200));
+        assertThat(unchanged.path("status").asText()).isEqualTo("RECEIVED");
+        assertThat(unchanged.path("lines").get(0).path("receivedQuantity").decimalValue())
+                .isEqualByComparingTo("7");
+        assertThat(unchanged.path("lines")).isEqualTo(received.path("lines"));
         assertThat(getFixtureProductTotalStockInWarehouse(north)).isEqualByComparingTo("7");
+        assertThat(jdbc.queryForObject(
+                "select quantity from inventory_balance where product_id=? and warehouse_location_id=?",
+                BigDecimal.class, secondProduct, northLocation)).isEqualByComparingTo("2.1250");
         assertThat(
                         jdbc.queryForObject(
                                 "select count(*) from stock_movement where"
@@ -63,6 +91,24 @@ class PurchaseContactAdminIntegrationTest extends PostgresIntegrationTest {
                                 Integer.class,
                                 id))
                 .isEqualTo(1);
+        UUID movementId = jdbc.queryForObject(
+                "select id from stock_movement where purchase_order_id=?::uuid", UUID.class, id);
+        var movement = parseHttpResponseJson(executeHttpRequestAndAssertStatus(
+                "GET", "/api/v1/movements/" + movementId, manager, null, 200));
+        assertThat(movement.path("purchaseOrderId").asText()).isEqualTo(id);
+        assertThat(movement.path("lines").size()).isEqualTo(2);
+        for (int index = 0; index < 2; index++) {
+            var purchaseLine = received.path("lines").get(index);
+            var movementLine = movement.path("lines").get(index);
+            assertThat(movementLine.path("productId").asLong())
+                    .isEqualTo(purchaseLine.path("productId").asLong());
+            assertThat(movementLine.path("quantity").decimalValue())
+                    .isEqualByComparingTo(purchaseLine.path("orderedQuantity").decimalValue());
+            assertThat(movementLine.path("unitCost").decimalValue())
+                    .isEqualByComparingTo(purchaseLine.path("unitCost").decimalValue());
+            assertThat(movementLine.path("targetLocationId").asLong()).isEqualTo(northLocation);
+            assertThat(movementLine.path("sourceLocationId").isNull()).isTrue();
+        }
         executeHttpRequestAndAssertStatus(
                 "GET",
                 "/api/v1/purchase-orders?warehouseId=" + north + "&status=RECEIVED",

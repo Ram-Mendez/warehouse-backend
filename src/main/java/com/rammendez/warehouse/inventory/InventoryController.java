@@ -14,7 +14,7 @@ public class InventoryController {
     }
 
     @GetMapping("/inventory")
-    public PageResponse<InventoryRepository.Balance> listInventoryBalancesWithinUserScope(
+    public PageResponse<InventoryDtos.Balance> listInventoryBalancesWithinUserScope(
             @RequestParam(required = false) Long warehouseId,
             @RequestParam(required = false) Long productId,
             @RequestParam(defaultValue = "0") int page,
@@ -23,7 +23,7 @@ public class InventoryController {
     }
 
     @GetMapping("/warehouses/{warehouseId}/inventory")
-    public PageResponse<InventoryRepository.Balance> listInventoryBalancesInWarehouse(
+    public PageResponse<InventoryDtos.Balance> listInventoryBalancesInWarehouse(
             @PathVariable long warehouseId,
             @RequestParam(required = false) Long productId,
             @RequestParam(defaultValue = "0") int page,
@@ -32,8 +32,17 @@ public class InventoryController {
     }
 
     @GetMapping("/warehouses/{warehouseId}/inventory/{productId}")
-    public InventoryService.Stock getProductStockTotalsInWarehouse(
+    public InventoryDtos.Stock getProductStockTotalsInWarehouse(
             @PathVariable long warehouseId, @PathVariable long productId) {
         return service.getProductStockTotalsInWarehouse(warehouseId, productId);
+    }
+
+    @GetMapping("/warehouses/{warehouseId}/stock-shortages")
+    public PageResponse<InventoryDtos.ProductShortage> getProductsShortagesInWarehouse(
+            @PathVariable long warehouseId,
+            @RequestParam(required = false) Long categoryId,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+        return service.getProductsShortages(warehouseId, categoryId, page, size);
     }
 }

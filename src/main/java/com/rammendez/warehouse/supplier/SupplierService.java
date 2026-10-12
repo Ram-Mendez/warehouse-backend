@@ -31,7 +31,9 @@ public class SupplierService {
     @Transactional
     @PreAuthorize("hasAuthority('PERM_SUPPLIER_WRITE')")
     public SupplierDtos.Response create(SupplierDtos.Input input) {
-        long id = repository.insert(input);
+        var supplier = new Supplier();
+        applyInput(supplier, input);
+        long id = repository.saveAndFlush(supplier).id;
         audit.recordAuditEventWithActorAndWarehouseReferences("SUPPLIER_CREATED", "supplier", id);
         return repository.getSupplier(id);
     }
@@ -40,8 +42,17 @@ public class SupplierService {
     @PreAuthorize("hasAuthority('PERM_SUPPLIER_WRITE')")
     public SupplierDtos.Response update(long id, SupplierDtos.Input input) {
         repository.getSupplier(id);
-        repository.update(id, input);
+        var supplier = repository.findById(id).orElseThrow(() -> BusinessException.missing("Supplier"));
+        applyInput(supplier, input);
+        repository.flush();
         audit.recordAuditEventWithActorAndWarehouseReferences("SUPPLIER_UPDATED", "supplier", id);
         return repository.getSupplier(id);
+    }
+    private void applyInput(Supplier supplier, SupplierDtos.Input input) {
+        supplier.code = input.code().trim();
+        supplier.name = input.name().trim();
+        supplier.email = input.email();
+        supplier.phone = input.phone();
+        supplier.active = input.active();
     }
 }

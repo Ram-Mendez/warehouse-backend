@@ -1,70 +1,32 @@
 package com.rammendez.warehouse.contact;
 
-import com.rammendez.warehouse.common.*;
-
-import org.springframework.jdbc.core.*;
-import org.springframework.stereotype.Repository;
-
+import com.rammendez.warehouse.common.BusinessException;
+import com.rammendez.warehouse.common.PageResponse;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
 import java.util.UUID;
 
-@Repository
-public class ContactRepository {
-    private final JdbcTemplate jdbc;
-    private static final RowMapper<ContactDtos.Response> ROW =
-            (r, n) ->
-                    new ContactDtos.Response(
-                            r.getObject("id", UUID.class),
-                            r.getString("name"),
-                            r.getString("email"),
-                            r.getString("subject"),
-                            r.getString("message"),
-                            ContactDtos.Status.valueOf(r.getString("status")),
-                            Sql.nullableLong(r, "assigned_to"),
-                            Sql.readNullableInstant(r, "created_at"),
-                            Sql.readNullableInstant(r, "resolved_at"));
-
-    public ContactRepository(JdbcTemplate jdbc) {
-        this.jdbc = jdbc;
+public interface ContactRepository extends JpaRepository<ContactMessage, UUID> {
+    default ContactDtos.Response getContactMessage(UUID id) {
+        return findById(id).orElseThrow(() -> BusinessException.missing("Contact message")).toResponse();
     }
 
-    public UUID insert(ContactDtos.Input input) {
-        UUID id = UUID.randomUUID();
-        jdbc.update(
-                "insert into contact_message(id,name,email,subject,message) values (?,?,?,?,?)",
-                id,
-                input.name().trim(),
-                input.email(),
-                input.subject().trim(),
-                input.message());
-        return id;
+    default PageResponse<ContactDtos.Response> list(int page, int size) {
+        PageResponse.validatePageBoundsAndCalculateOffset(page, size);
+        var order = Sort.by(Sort.Direction.DESC, "createdAt").and(Sort.by("id"));
+        var result = findAll(PageRequest.of(page, size, order));
+        return new PageResponse<>(result.map(ContactMessage::toResponse).getContent(), result.getTotalElements(), page, size);
     }
 
-    public ContactDtos.Response getContactMessage(UUID id) {
-        return Sql.firstRowOrThrowNotFound(
-                jdbc.query("select * from contact_message where id=?", ROW, id), "Contact message");
-    }
-
-    public PageResponse<ContactDtos.Response> list(int page, int size) {
-        int offset = PageResponse.validatePageBoundsAndCalculateOffset(page, size);
-        return new PageResponse<>(
-                jdbc.query(
-                        "select * from contact_message order by created_at desc,id limit ? offset"
-                                + " ?",
-                        ROW,
-                        size,
-                        offset),
-                jdbc.queryForObject("select count(*) from contact_message", Long.class),
-                page,
-                size);
-    }
-
-    public void updateContactMessageStatusAndAssignActor(UUID id, ContactDtos.Status status, long actor) {
-        jdbc.update(
-                "update contact_message set status=?,assigned_to=?,resolved_at=case when"
-                        + " ?='RESOLVED' then now() else null end where id=?",
-                status.name(),
-                actor,
-                status.name(),
-                id);
-    }
+    @Modifying(flushAutomatically = true, clearAutomatically = true)
+    @Query("""
+            update ContactMessage m
+            set m.status = :status, m.assignedTo = :actor,
+                m.resolvedAt = case when :resolved = true then instant else null end
+            where m.id = :id
+            """)
+    void updateStatus(UUID id, ContactDtos.Status status, long actor, boolean resolved);
 }

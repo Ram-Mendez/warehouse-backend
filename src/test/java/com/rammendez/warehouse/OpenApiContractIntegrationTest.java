@@ -98,7 +98,7 @@ class OpenApiContractIntegrationTest {
                 }
             }
         }
-        assertThat(operations).isEqualTo(58);
+        assertThat(operations).isEqualTo(59);
         assertThat(requestBodies).isEqualTo(26);
     }
 

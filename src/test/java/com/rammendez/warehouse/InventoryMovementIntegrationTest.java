@@ -16,8 +16,14 @@ class InventoryMovementIntegrationTest extends PostgresIntegrationTest {
     @Test
     void receiptAndIssueUpdateTotalAndAvailableStockBalances() throws Exception {
         postNorthWarehouseReceiptAndReturnMovement(new BigDecimal("10.5"));
+        assertThat(jdbc.queryForObject(
+                "select version from inventory_balance where product_id=? and warehouse_location_id=?",
+                Long.class, product, northLocation)).isEqualTo(1L);
         executeHttpRequestAndAssertStatus("POST", "/api/v1/movements/issue", worker, createStockMovementRequestBody(north, new BigDecimal("3.25")), 201);
         assertThat(getFixtureProductTotalStockInWarehouse(north)).isEqualByComparingTo("7.25");
+        assertThat(jdbc.queryForObject(
+                "select version from inventory_balance where product_id=? and warehouse_location_id=?",
+                Long.class, product, northLocation)).isEqualTo(2L);
         var current =
                 parseHttpResponseJson(
                         executeHttpRequestAndAssertStatus(
@@ -37,6 +43,17 @@ class InventoryMovementIntegrationTest extends PostgresIntegrationTest {
                                 .path("content")
                                 .size())
                 .isEqualTo(1);
+        var movements = parseHttpResponseJson(executeHttpRequestAndAssertStatus(
+                "GET", "/api/v1/movements?productId=" + product, worker, null, 200));
+        assertThat(movements.path("totalElements").asInt()).isEqualTo(2);
+        assertThat(movements.path("content").size()).isEqualTo(2);
+        for (var movement : movements.path("content")) {
+            assertThat(movement.path("lines").size()).isEqualTo(1);
+            var line = movement.path("lines").get(0);
+            assertThat(line.path("productId").asLong()).isEqualTo(product);
+            assertThat(line.path("quantity").decimalValue()).isEqualByComparingTo(
+                    movement.path("type").asText().equals("RECEIPT") ? "10.5" : "3.25");
+        }
     }
 
     @Test
@@ -57,6 +74,22 @@ class InventoryMovementIntegrationTest extends PostgresIntegrationTest {
                 createStockMovementRequestBody(north, new BigDecimal("0.00001")),
                 400);
         assertThat(getFixtureProductTotalStockInWarehouse(north)).isEqualByComparingTo("10");
+        assertThat(jdbc.queryForObject(
+                "select version from inventory_balance where product_id=? and warehouse_location_id=?",
+                Long.class, product, northLocation)).isEqualTo(1L);
+        executeHttpRequestAndAssertStatus("POST", "/api/v1/movements/issue", admin,
+                createStockMovementRequestBody(north, new BigDecimal("6")), 201);
+        var remaining = parseHttpResponseJson(executeHttpRequestAndAssertStatus(
+                "GET", "/api/v1/warehouses/" + north + "/inventory/" + product, admin, null, 200));
+        assertThat(remaining.path("quantity").decimalValue()).isEqualByComparingTo("4");
+        assertThat(remaining.path("reservedQuantity").decimalValue()).isEqualByComparingTo("4");
+        assertThat(remaining.path("availableQuantity").decimalValue()).isZero();
+        assertThat(jdbc.queryForObject(
+                "select reserved_quantity from inventory_balance where product_id=? and warehouse_location_id=?",
+                BigDecimal.class, product, northLocation)).isEqualByComparingTo("4");
+        assertThat(jdbc.queryForObject(
+                "select version from inventory_balance where product_id=? and warehouse_location_id=?",
+                Long.class, product, northLocation)).isEqualTo(2L);
     }
 
     @Test
@@ -305,6 +338,12 @@ class InventoryMovementIntegrationTest extends PostgresIntegrationTest {
         assertThat(audits.get(0).path("operation").asText()).isEqualTo("UPDATE");
         assertThat(audits.get(0).path("oldRow").path("status").asText()).isEqualTo("DRAFT");
         assertThat(audits.get(0).path("newRow").path("status").asText()).isEqualTo("POSTED");
+        assertThat(audits.get(0).path("oldRow").path("version").asLong()).isZero();
+        assertThat(audits.get(0).path("newRow").path("version").asLong()).isEqualTo(1L);
+        assertThat(audits.get(0).path("newRow").path("posted_by").asLong()).isEqualTo(adminId);
+        assertThat(audits.get(1).path("operation").asText()).isEqualTo("INSERT");
+        assertThat(audits.get(1).path("newRow").path("status").asText()).isEqualTo("DRAFT");
+        assertThat(audits.get(1).path("newRow").path("created_by").asLong()).isEqualTo(adminId);
         assertThat(audits.get(1).path("oldRow").isNull()).isTrue();
     }
 

@@ -13,14 +13,17 @@ import java.util.UUID;
 @PreAuthorize("hasAuthority('PERM_AUDIT_READ')")
 public class AuditReadService {
     private final AuditRepository repository;
+    private final tools.jackson.databind.ObjectMapper mapper;
     private final com.rammendez.warehouse.security.AccessControl access;
     private final com.rammendez.warehouse.movement.MovementRepository movements;
 
     public AuditReadService(
             AuditRepository repository,
+            tools.jackson.databind.ObjectMapper mapper,
             com.rammendez.warehouse.security.AccessControl access,
             com.rammendez.warehouse.movement.MovementRepository movements) {
         this.repository = repository;
+        this.mapper = mapper;
         this.access = access;
         this.movements = movements;
     }
@@ -49,13 +52,16 @@ public class AuditReadService {
                 access.requireJwtAuthentication().getAuthorities().stream()
                         .map(org.springframework.security.core.GrantedAuthority::getAuthority)
                         .toList();
-        return repository.listAuditEventsWithinUserPermissionsAndScope(
+        PageResponse.validatePageBoundsAndCalculateOffset(page, size);
+        var result = repository.findScopedEvents(
                 access.getAuthenticatedUserId(),
                 authorities.contains("PERM_USER_MANAGE"),
                 authorities.contains("PERM_CONTACT_READ"),
                 type,
                 id,
-                page,
-                size);
+                org.springframework.data.domain.PageRequest.of(page, size));
+        return new PageResponse<>(result.stream().map(e -> new AuditRepository.Event(
+                e.id, e.actorUserId, e.eventType, e.entityType, e.entityId,
+                mapper.readTree(e.eventData), e.occurredAt)).toList(), result.getTotalElements(), page, size);
     }
 }

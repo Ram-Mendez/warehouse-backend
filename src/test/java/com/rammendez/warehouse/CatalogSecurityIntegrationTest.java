@@ -164,6 +164,23 @@ class CatalogSecurityIntegrationTest extends PostgresIntegrationTest {
         executeHttpRequestAndAssertStatus("GET", "/api/v1/warehouses/" + north, worker, null, 200);
         executeHttpRequestAndAssertStatus("GET", "/api/v1/warehouses/" + south, worker, null, 403);
         executeHttpRequestAndAssertStatus("GET", "/api/v1/warehouses/" + south + "/inventory", worker, null, 403);
+        jdbc.update("update product set minimum_stock=10 where id=?", product);
+        String shortagesPath = "/api/v1/warehouses/" + north + "/stock-shortages";
+        // An omitted category remains optional; filtering isolates this test's product.
+        executeHttpRequestAndAssertStatus("GET", shortagesPath, worker, null, 200);
+        var shortages = parseHttpResponseJson(executeHttpRequestAndAssertStatus(
+                "GET", shortagesPath + "?categoryId=" + category, worker, null, 200));
+        assertThat(shortages.path("totalElements").asLong()).isEqualTo(1);
+        var shortage = shortages.path("content").get(0);
+        assertThat(shortage.path("productId").asLong()).isEqualTo(product);
+        assertThat(shortage.path("minimumStock").decimalValue()).isEqualByComparingTo("10");
+        assertThat(shortage.path("physicalStock").decimalValue()).isEqualByComparingTo("0");
+        assertThat(shortage.path("reservedStock").decimalValue()).isEqualByComparingTo("0");
+        assertThat(shortage.path("availableStock").decimalValue()).isEqualByComparingTo("0");
+        assertThat(shortage.path("shortage").decimalValue()).isEqualByComparingTo("10");
+        executeHttpRequestAndAssertStatus("GET",
+                "/api/v1/warehouses/" + south + "/stock-shortages?categoryId=" + category,
+                worker, null, 403);
         var list = parseHttpResponseJson(executeHttpRequestAndAssertStatus("GET", "/api/v1/warehouses", worker, null, 200));
         assertThat(list.path("totalElements").asLong()).isEqualTo(1);
         executeHttpRequestAndAssertStatus("POST", "/api/v1/transfers", worker, createNorthToSouthTransferRequestBody(java.math.BigDecimal.ONE), 403);
@@ -185,9 +202,12 @@ class CatalogSecurityIntegrationTest extends PostgresIntegrationTest {
                 "GET", "/api/v1/inventory", worker, null, 200));
         assertThat(empty.path("totalElements").asLong()).isZero();
         assertThat(empty.path("content").size()).isZero();
+        executeHttpRequestAndAssertStatus("GET", shortagesPath, worker, null, 403);
+        grantFixtureUserWarehouseScope(workerId, north, "VIEWER");
         jdbc.update("delete from security_user_role where user_id=?", workerId);
         executeHttpRequestAndAssertStatus("GET", "/api/v1/warehouses/" + north, worker, null, 403);
         executeHttpRequestAndAssertStatus("GET", "/api/v1/inventory", worker, null, 403);
+        executeHttpRequestAndAssertStatus("GET", shortagesPath, worker, null, 403);
     }
 
     @Test

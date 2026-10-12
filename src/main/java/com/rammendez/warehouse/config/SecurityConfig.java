@@ -4,7 +4,7 @@ import com.nimbusds.jose.jwk.source.ImmutableSecret;
 import com.rammendez.warehouse.common.ApiExceptionHandler;
 import com.rammendez.warehouse.security.SecurityRepository;
 
-import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
@@ -31,18 +31,17 @@ import javax.crypto.spec.SecretKeySpec;
 
 @Configuration
 @EnableMethodSecurity
+@EnableConfigurationProperties(JwtProperties.class)
 public class SecurityConfig {
     @Bean
     PasswordEncoder passwordEncoder() {
+        // BCrypt is deliberately slow; the work factor makes stolen hashes harder to guess.
         return new BCryptPasswordEncoder(12);
     }
 
     @Bean
-    SecretKeySpec jwtKey(@Value("${security.jwt.secret}") String secret) {
-        byte[] key = secret.getBytes(StandardCharsets.UTF_8);
-        if (key.length < 32) {
-            throw new IllegalStateException("JWT_SECRET must contain at least 32 bytes");
-        }
+    SecretKeySpec jwtKey(JwtProperties properties) {
+        byte[] key = properties.secret().getBytes(StandardCharsets.UTF_8);
         return new SecretKeySpec(key, "HmacSHA256");
     }
 
@@ -52,9 +51,10 @@ public class SecurityConfig {
     }
 
     @Bean
-    JwtDecoder jwtDecoder(SecretKeySpec key, @Value("${security.jwt.issuer}") String issuer) {
+    JwtDecoder jwtDecoder(SecretKeySpec key, JwtProperties properties) {
+        // Verify the signature, issuer and time bounds before trusting the token's claims.
         var decoder = NimbusJwtDecoder.withSecretKey(key).macAlgorithm(MacAlgorithm.HS256).build();
-        decoder.setJwtValidator(JwtValidators.createDefaultWithIssuer(issuer));
+        decoder.setJwtValidator(JwtValidators.createDefaultWithIssuer(properties.issuer()));
         return decoder;
     }
 
@@ -62,6 +62,7 @@ public class SecurityConfig {
     SecurityFilterChain security(
             HttpSecurity http, SecurityRepository repository, ObjectMapper mapper)
             throws Exception {
+        // Bearer credentials are sent explicitly, not in browser cookies. No HTTP session is kept.
         http.csrf(csrf -> csrf.disable())
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS));
         http.authorizeHttpRequests(
@@ -70,7 +71,9 @@ public class SecurityConfig {
                                         "/swagger-ui/**",
                                         "/swagger-ui.html",
                                         "/v3/api-docs/**",
-                                        "/actuator/health")
+                                        "/actuator/health",
+                                        "/actuator/health/liveness",
+                                        "/actuator/health/readiness")
                                 .permitAll()
                                 .requestMatchers(
                                         HttpMethod.POST,
@@ -103,6 +106,7 @@ public class SecurityConfig {
                                                     && (path.equals("/api/v1/auth/login")
                                                             || path.equals("/api/v1/auth/refresh")
                                                             || path.equals("/api/v1/contact"))) {
+                                                // An expired access header must not block refresh or public submission.
                                                 return null;
                                             }
                                             return resolver.resolve(request);
@@ -127,14 +131,17 @@ public class SecurityConfig {
                                                                             .orElseThrow(
                                                                                     SecurityConfig
                                                                                             ::createInvalidTokenException);
-                                                            Number version = token.getClaim("av");
+                                                            Object versionClaim = token.getClaim("av");
                                                             if (!user.enabled()
                                                                     || user.locked()
-                                                                    || version == null
+                                                                    || !(versionClaim instanceof Number version)
+                                                                    || version.doubleValue() != version.longValue()
                                                                     || version.longValue()
                                                                             != user.authVersion()) {
                                                                 throw createInvalidTokenException();
                                                             }
+                                                            // Authentication identifies the subject; current DB permissions
+                                                            // still control authorization, even if JWT role claims are stale.
                                                             var authorities =
                                                                     new ArrayList<
                                                                             SimpleGrantedAuthority>();
@@ -173,6 +180,9 @@ public class SecurityConfig {
             ObjectMapper mapper)
             throws java.io.IOException {
         response.setStatus(status);
+        if (status == 401) {
+            response.setHeader("WWW-Authenticate", "Bearer");
+        }
         response.setContentType("application/problem+json");
         response.getWriter()
                 .write(

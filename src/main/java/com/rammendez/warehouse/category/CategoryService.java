@@ -33,7 +33,9 @@ public class CategoryService {
     public CategoryDtos.Response create(CategoryDtos.Input input) {
         repository.lockHierarchy();
         validateOptionalCategoryParentAndRejectHierarchyCycles(input.parentId(), null);
-        long id = repository.insert(input);
+        var category = new Category();
+        applyInput(category, input);
+        long id = repository.saveAndFlush(category).id;
         audit.recordAuditEventWithActorAndWarehouseReferences("CATEGORY_CREATED", "category", id);
         return repository.getCategory(id);
     }
@@ -44,9 +46,18 @@ public class CategoryService {
         repository.lockHierarchy();
         repository.getCategory(id);
         validateOptionalCategoryParentAndRejectHierarchyCycles(input.parentId(), id);
-        repository.update(id, input);
+        var category = repository.findById(id).orElseThrow(() -> BusinessException.missing("Category"));
+        applyInput(category, input);
+        repository.flush();
         audit.recordAuditEventWithActorAndWarehouseReferences("CATEGORY_UPDATED", "category", id);
         return repository.getCategory(id);
+    }
+
+    private void applyInput(Category category, CategoryDtos.Input input) {
+        category.code = input.code().trim();
+        category.name = input.name().trim();
+        category.parent = input.parentId() == null ? null : repository.getReferenceById(input.parentId());
+        category.active = input.active();
     }
 
     private void validateOptionalCategoryParentAndRejectHierarchyCycles(Long parentId, Long id) {

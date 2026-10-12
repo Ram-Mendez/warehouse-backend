@@ -1,61 +1,29 @@
 package com.rammendez.warehouse.category;
 
-import com.rammendez.warehouse.common.*;
+import com.rammendez.warehouse.common.BusinessException;
+import com.rammendez.warehouse.common.PageResponse;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
 
-import org.springframework.jdbc.core.*;
-import org.springframework.stereotype.Repository;
+public interface CategoryRepository extends JpaRepository<Category, Long> {
+    // Serialize hierarchy edits so concurrent reparenting cannot pass separate cycle checks.
+    // A single transaction-scoped lock trades write throughput for a simple tree invariant.
+    @Query(value = "select cast(pg_advisory_xact_lock(4815162342) as text)", nativeQuery = true)
+    String acquireHierarchyTransactionLock();
 
-@Repository
-public class CategoryRepository {
-    private final JdbcTemplate jdbc;
-    private static final RowMapper<CategoryDtos.Response> ROW =
-            (r, n) ->
-                    new CategoryDtos.Response(
-                            r.getLong("id"),
-                            r.getString("code"),
-                            r.getString("name"),
-                            Sql.nullableLong(r, "parent_id"),
-                            r.getBoolean("active"));
-
-    public CategoryRepository(JdbcTemplate jdbc) {
-        this.jdbc = jdbc;
+    default void lockHierarchy() {
+        acquireHierarchyTransactionLock();
     }
 
-    public void lockHierarchy() {
-        jdbc.queryForObject("select pg_advisory_xact_lock(4815162342)", Object.class);
+    default CategoryDtos.Response getCategory(long id) {
+        return findById(id).orElseThrow(() -> BusinessException.missing("Category")).toResponse();
     }
 
-    public CategoryDtos.Response getCategory(long id) {
-        return Sql.firstRowOrThrowNotFound(jdbc.query("select * from category where id=?", ROW, id), "Category");
-    }
-
-    public PageResponse<CategoryDtos.Response> list(int page, int size) {
-        int offset = PageResponse.validatePageBoundsAndCalculateOffset(page, size);
-        return new PageResponse<>(
-                jdbc.query(
-                        "select * from category order by id limit ? offset ?", ROW, size, offset),
-                jdbc.queryForObject("select count(*) from category", Long.class),
-                page,
-                size);
-    }
-
-    public long insert(CategoryDtos.Input input) {
-        return jdbc.queryForObject(
-                "insert into category(code,name,parent_id,active) values (?,?,?,?) returning id",
-                Long.class,
-                input.code().trim(),
-                input.name().trim(),
-                input.parentId(),
-                input.active());
-    }
-
-    public void update(long id, CategoryDtos.Input input) {
-        jdbc.update(
-                "update category set code=?,name=?,parent_id=?,active=? where id=?",
-                input.code().trim(),
-                input.name().trim(),
-                input.parentId(),
-                input.active(),
-                id);
+    default PageResponse<CategoryDtos.Response> list(int page, int size) {
+        PageResponse.validatePageBoundsAndCalculateOffset(page, size);
+        var result = findAll(PageRequest.of(page, size, Sort.by("id")));
+        return new PageResponse<>(result.map(Category::toResponse).getContent(), result.getTotalElements(), page, size);
     }
 }

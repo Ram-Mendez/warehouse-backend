@@ -41,7 +41,7 @@ public final class AdminDtos {
 
     public record Scope(@Positive long warehouseId, @NotNull ScopeRole scopeRole) {}
 
-    public record Scopes(@NotNull @Size(max = 100) List<@Valid Scope> scopes) {}
+    public record Scopes(@NotNull @Size(max = 100) List<@NotNull @Valid Scope> scopes) {}
 
     public record UserSummary(
             long id, String username, String email, boolean enabled, boolean locked) {}

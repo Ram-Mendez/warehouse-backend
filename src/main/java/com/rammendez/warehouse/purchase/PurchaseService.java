@@ -111,6 +111,7 @@ public class PurchaseService {
     @Transactional
     @PreAuthorize("hasAuthority('PERM_PURCHASE_RECEIVE')")
     public PurchaseDtos.Response receiveAllPurchaseLinesAndMarkOrderReceived(UUID id) {
+        // Lock before reading status: concurrent receipts must recheck the committed state.
         var purchase = repository.getPurchaseOrderWithLinesAndOptionalLock(id, true);
         access.requireWarehouseScope(purchase.warehouseId(), true);
         if (purchase.status() != PurchaseStatus.SUBMITTED
@@ -135,6 +136,8 @@ public class PurchaseService {
                                                 line.orderedQuantity(),
                                                 line.unitCost()))
                         .toList();
+        // Default REQUIRED propagation joins this transaction. A separate commit here could
+        // leave stock received while the purchase still appears unreceived after a failure.
         movements.receivePurchaseLinesIntoDefaultLocationAndPostReceipt(id, purchase.warehouseId(), lines);
         repository.markAllPurchaseLinesAndOrderReceived(id);
         audit.recordAuditEventWithActorAndWarehouseReferences("PURCHASE_RECEIVED", "purchase_order", id);

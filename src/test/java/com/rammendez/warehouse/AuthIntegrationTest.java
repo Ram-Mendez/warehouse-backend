@@ -49,24 +49,12 @@ class AuthIntegrationTest extends PostgresIntegrationTest {
                                         .getStatus();
                             });
             assertThat(entered.await(3, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
-            boolean waiting = false;
-            long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(3);
-            while (System.nanoTime() < deadline) {
-                waiting =
-                        Boolean.TRUE.equals(
-                                jdbc.queryForObject(
-                                        "select exists(select 1 from pg_stat_activity where"
-                                            + " wait_event_type='Lock' and query like 'select *"
-                                            + " from security_user where username=%for update')",
-                                        Boolean.class));
-                if (waiting) {
-                    break;
-                }
-                Thread.sleep(20);
+            try {
+                awaitBlockedDatabaseStatements("security_user", 1);
+            } finally {
+                connection.commit();
+                connection.setAutoCommit(true);
             }
-            connection.commit();
-            connection.setAutoCommit(true);
-            assertThat(waiting).as("Login waits on the account row lock").isTrue();
             assertThat(login.get(10, java.util.concurrent.TimeUnit.SECONDS)).isEqualTo(401);
         }
     }
@@ -110,8 +98,36 @@ class AuthIntegrationTest extends PostgresIntegrationTest {
 
     @Test
     void productListingRejectsMissingOrMalformedJwt() throws Exception {
-        executeHttpRequestAndAssertStatus("GET", "/api/v1/products", null, null, 401);
-        executeHttpRequestAndAssertStatus("GET", "/api/v1/products", "bad.jwt.value", null, 401);
+        for (String token : new String[] {null, "bad.jwt.value"}) {
+            var result = executeHttpRequestAndAssertStatus("GET", "/api/v1/products", token, null, 401);
+            assertThat(result.getResponse().getHeader("WWW-Authenticate")).isEqualTo("Bearer");
+            assertThat(result.getResponse().getContentType()).startsWith("application/problem+json");
+        }
+    }
+
+    @Test
+    void signedTokensWithMalformedAuthVersionOrMissingSubjectAreUnauthorized() throws Exception {
+        // Signature validity alone does not make an application's required claims valid.
+        for (Object version : java.util.List.of("0", 0.5, true)) {
+            var claims = org.springframework.security.oauth2.jwt.JwtClaimsSet.builder()
+                    .issuer("warehouse-backend")
+                    .subject(Long.toString(adminId))
+                    .issuedAt(java.time.Instant.now())
+                    .expiresAt(java.time.Instant.now().plusSeconds(120))
+                    .claim("av", version)
+                    .build();
+            String token = encoder.encode(
+                    org.springframework.security.oauth2.jwt.JwtEncoderParameters.from(
+                            org.springframework.security.oauth2.jwt.JwsHeader.with(
+                                    org.springframework.security.oauth2.jose.jws.MacAlgorithm.HS256).build(),
+                            claims)).getTokenValue();
+            var result = executeHttpRequestAndAssertStatus("GET", "/api/v1/auth/me", token, null, 401);
+            assertThat(result.getResponse().getHeader("WWW-Authenticate")).isEqualTo("Bearer");
+        }
+        executeHttpRequestAndAssertStatus(
+                "GET", "/api/v1/auth/me",
+                createSignedJwtWithIssuerAndExpiry(null, "warehouse-backend", java.time.Instant.now().plusSeconds(120)),
+                null, 401);
     }
 
     @Test
@@ -311,7 +327,11 @@ class AuthIntegrationTest extends PostgresIntegrationTest {
     private String createSignedJwtWithIssuerAndExpiry(String subject, String issuer, java.time.Instant expires) {
         var claims =
                 org.springframework.security.oauth2.jwt.JwtClaimsSet.builder()
-                        .subject(subject)
+                        .claims(values -> {
+                            if (subject != null) {
+                                values.put("sub", subject);
+                            }
+                        })
                         .issuer(issuer)
                         .issuedAt(java.time.Instant.now().minusSeconds(500))
                         .expiresAt(expires)

@@ -23,12 +23,15 @@ import java.math.BigDecimal;
 import java.util.Map;
 import java.util.UUID;
 
+// MockMvc exercises Spring MVC and the real security chain without an external HTTP client.
+// No test-wide @Transactional: service commits and deferred constraints must really execute.
 @SpringBootTest
 @AutoConfigureMockMvc(
         print = org.springframework.boot.webmvc.test.autoconfigure.MockMvcPrint.NONE,
         printOnlyOnFailure = false)
 @ActiveProfiles("test")
 abstract class PostgresIntegrationTest {
+    // Real PostgreSQL runs Flyway, row locks and triggers that an in-memory substitute cannot prove.
     static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:18-alpine");
 
     static {
@@ -222,10 +225,20 @@ abstract class PostgresIntegrationTest {
         int blocked;
         do {
             blocked = jdbc.queryForObject(
-                    "select count(*) from pg_stat_activity where datname=current_database()"
-                            + " and pid<>pg_backend_pid() and state='active'"
-                            + " and wait_event_type='Lock' and query like ?",
-                    Integer.class, "%" + table + "%");
+                    """
+                    select count(*) from pg_stat_activity activity
+                    where activity.datname = current_database()
+                      and activity.pid <> pg_backend_pid()
+                      and activity.state = 'active'
+                      and activity.wait_event_type = 'Lock'
+                      and cardinality(pg_blocking_pids(activity.pid)) > 0
+                      and exists (
+                          select 1 from pg_locks relation_lock
+                          where relation_lock.pid = activity.pid
+                            and relation_lock.relation = cast(? as regclass)
+                      )
+                    """,
+                    Integer.class, table);
             if (blocked == expected) {
                 return;
             }

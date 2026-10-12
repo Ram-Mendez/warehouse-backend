@@ -9,7 +9,6 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.converter.HttpMessageNotReadableException;
-import org.springframework.jdbc.UncategorizedSQLException;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -18,11 +17,11 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 import java.net.URI;
-import java.sql.SQLException;
 import java.time.Instant;
 
 @RestControllerAdvice
 public class ApiExceptionHandler {
+    // Keep HTTP failures consistent without returning SQL, credentials or stack traces.
     @ExceptionHandler(BusinessException.class)
     ProblemDetail handleBusinessException(BusinessException error, HttpServletRequest request) {
         return createProblemDetailWithRequestMetadata(error.status(), error.getMessage(), request);
@@ -58,7 +57,11 @@ public class ApiExceptionHandler {
         ConcurrencyFailureException.class,
         ObjectOptimisticLockingFailureException.class
     })
-    ProblemDetail handleDataOrConcurrencyConflict(HttpServletRequest request) {
+    ProblemDetail handleDataOrConcurrencyConflict(Exception error, HttpServletRequest request) {
+        if (isDatabaseLockUnavailable(error)) {
+            return createProblemDetailWithRequestMetadata(HttpStatus.CONFLICT,
+                    "Concurrent operation could not acquire database lock", request);
+        }
         return createProblemDetailWithRequestMetadata(
                 HttpStatus.CONFLICT,
                 "Duplicate, referenced resource, or concurrent change conflicts with this"
@@ -68,6 +71,10 @@ public class ApiExceptionHandler {
 
     @ExceptionHandler(Exception.class)
     ProblemDetail handleUnexpectedOrFrameworkException(Exception error, HttpServletRequest request) {
+        if (isDatabaseLockUnavailable(error)) {
+            return createProblemDetailWithRequestMetadata(HttpStatus.CONFLICT,
+                    "Concurrent operation could not acquire database lock", request);
+        }
         if (error instanceof org.springframework.web.ErrorResponse framework) {
             return createProblemDetailWithRequestMetadata(
                     HttpStatus.valueOf(framework.getStatusCode().value()),
@@ -79,17 +86,14 @@ public class ApiExceptionHandler {
         return createProblemDetailWithRequestMetadata(HttpStatus.INTERNAL_SERVER_ERROR, "Unexpected internal failure", request);
     }
 
-    @ExceptionHandler(UncategorizedSQLException.class)
-    ProblemDetail handleUncategorizedSqlException(
-            UncategorizedSQLException error, HttpServletRequest request) {
-        Throwable cause = error.getMostSpecificCause();
-        if (cause instanceof SQLException sql && "55P03".equals(sql.getSQLState())) {
-            return createProblemDetailWithRequestMetadata(
-                    HttpStatus.CONFLICT,
-                    "Concurrent operation could not acquire database lock",
-                    request);
+    private boolean isDatabaseLockUnavailable(Throwable error) {
+        for (Throwable cause = error; cause != null; cause = cause.getCause()) {
+            if (cause instanceof org.hibernate.JDBCException persistence
+                    && "55P03".equals(persistence.getSQLState())) {
+                return true;
+            }
         }
-        return handleUnexpectedOrFrameworkException(error, request);
+        return false;
     }
 
     public static ProblemDetail createProblemDetailWithRequestMetadata(

@@ -1,67 +1,45 @@
 package com.rammendez.warehouse.security;
 
-import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.core.RowMapper;
-import org.springframework.stereotype.Repository;
-
+import jakarta.persistence.LockModeType;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Query;
 import java.util.List;
 import java.util.Optional;
 
-@Repository
-public class SecurityRepository {
-    private final JdbcTemplate jdbc;
-    private static final RowMapper<UserAccount> USER =
-            (r, n) ->
-                    new UserAccount(
-                            r.getLong("id"),
-                            r.getString("username"),
-                            r.getString("email"),
-                            r.getString("password_hash"),
-                            r.getBoolean("enabled"),
-                            r.getBoolean("locked"),
-                            r.getLong("auth_version"));
+public interface SecurityRepository extends JpaRepository<SecurityUser, Long> {
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select u from SecurityUser u where u.username = :username")
+    Optional<SecurityUser> findAndLockByUsername(String username);
 
-    public SecurityRepository(JdbcTemplate jdbc) {
-        this.jdbc = jdbc;
+    default Optional<UserAccount> findAndLockUserByUsername(String username) {
+        return findAndLockByUsername(username).map(SecurityUser::toAccount);
     }
 
-    public Optional<UserAccount> findAndLockUserByUsername(String username) {
-        return jdbc
-                .query("select * from security_user where username=? for update", USER, username)
-                .stream()
-                .findFirst();
-    }
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select u from SecurityUser u where u.id = :id")
+    Optional<SecurityUser> findAndLockById(long id);
 
-    public Optional<UserAccount> findUserById(long id) {
-        return jdbc.query("select * from security_user where id=?", USER, id).stream().findFirst();
-    }
+    @Query("""
+            select new com.rammendez.warehouse.security.UserAccount(
+                u.id, u.username, u.email, u.passwordHash, u.enabled, u.locked, u.authVersion)
+            from SecurityUser u where u.id = :id
+            """)
+    Optional<UserAccount> findUserById(long id);
 
-    public List<String> findUserRoleCodes(long userId) {
-        return jdbc.queryForList(
-                "select r.code from security_role r join security_user_role ur on ur.role_id=r.id"
-                        + " where ur.user_id=? order by r.code",
-                String.class,
-                userId);
-    }
+    @Query("select r.code from SecurityUser u join u.roles r where u.id = :userId order by r.code")
+    List<String> findUserRoleCodes(long userId);
 
-    public List<String> findUserPermissionCodes(long userId) {
-        return jdbc.queryForList(
-                "select distinct p.code from security_permission p join security_role_permission rp"
-                        + " on rp.permission_id=p.id join security_user_role ur on"
-                        + " ur.role_id=rp.role_id where ur.user_id=? order by p.code",
-                String.class,
-                userId);
-    }
+    @Query("""
+            select distinct p.code from SecurityUser u join u.roles r join r.permissions p
+            where u.id = :userId order by p.code
+            """)
+    List<String> findUserPermissionCodes(long userId);
 
-    public boolean hasWarehouseScopeForRequestedAccess(long userId, long warehouseId, boolean write) {
-        return Boolean.TRUE.equals(
-                jdbc.queryForObject(
-                        "select exists(select 1 from security_user_warehouse_scope where user_id=?"
-                                + " and warehouse_id=? and (?=false or scope_role in"
-                                + " ('OPERATOR','APPROVER','MANAGER')))",
-                        Boolean.class,
-                        userId,
-                        warehouseId,
-                        write));
-    }
+    @Query("""
+            select count(s) > 0 from WarehouseScope s
+            where s.userId = :userId and s.warehouseId = :warehouseId
+              and (:write = false or s.scopeRole in (OPERATOR, APPROVER, MANAGER))
+            """)
+    boolean hasWarehouseScopeForRequestedAccess(long userId, long warehouseId, boolean write);
 }

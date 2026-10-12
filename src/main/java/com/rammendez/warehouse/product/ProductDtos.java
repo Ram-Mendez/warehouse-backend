@@ -6,7 +6,8 @@ import java.math.BigDecimal;
 import java.time.Instant;
 
 public final class ProductDtos {
-    private ProductDtos() {}
+    private ProductDtos() {
+    }
 
     public record Input(
             @NotBlank @Size(max = 80) String sku,
@@ -19,7 +20,8 @@ public final class ProductDtos {
             @NotNull Boolean active,
             Long supplierId,
             @PositiveOrZero @Digits(integer = 15, fraction = 4) BigDecimal unitCost,
-            Long version) {}
+            Long version) {
+    }
 
     public record Response(
             long id,
@@ -33,7 +35,8 @@ public final class ProductDtos {
             boolean active,
             long version,
             Instant createdAt,
-            Instant updatedAt) {}
+            Instant updatedAt) {
+    }
 
     public record SupplierLink(
             long supplierId,
@@ -41,5 +44,8 @@ public final class ProductDtos {
             String supplierName,
             String supplierProductCode,
             BigDecimal unitCost,
-            boolean preferred) {}
+            boolean preferred) {
+    }
+
+
 }

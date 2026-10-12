@@ -1,9 +1,9 @@
 package com.rammendez.warehouse.auth;
 
 import com.rammendez.warehouse.common.BusinessException;
+import com.rammendez.warehouse.config.JwtProperties;
 import com.rammendez.warehouse.security.*;
 
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.oauth2.jose.jws.MacAlgorithm;
@@ -26,6 +26,7 @@ import java.util.UUID;
 public class AuthService {
     private final SecurityRepository users;
     private final AuthRepository repository;
+    private final RefreshTokenRepository refreshTokens;
     private final PasswordEncoder passwords;
     private final JwtEncoder encoder;
     private final AccessControl access;
@@ -39,22 +40,22 @@ public class AuthService {
     public AuthService(
             SecurityRepository users,
             AuthRepository repository,
+            RefreshTokenRepository refreshTokens,
             PasswordEncoder passwords,
             JwtEncoder encoder,
             AccessControl access,
             PlatformTransactionManager manager,
-            @Value("${security.jwt.issuer}") String issuer,
-            @Value("${security.jwt.access-token-ttl}") Duration accessTtl,
-            @Value("${security.jwt.refresh-token-ttl}") Duration refreshTtl) {
+            JwtProperties properties) {
         this.users = users;
         this.repository = repository;
+        this.refreshTokens = refreshTokens;
         this.passwords = passwords;
         this.encoder = encoder;
         this.access = access;
         this.transaction = new TransactionTemplate(manager);
-        this.issuer = issuer;
-        this.accessTtl = accessTtl;
-        this.refreshTtl = refreshTtl;
+        this.issuer = properties.issuer();
+        this.accessTtl = properties.accessTokenTtl();
+        this.refreshTtl = properties.refreshTokenTtl();
         this.dummyHash = passwords.encode(UUID.randomUUID().toString());
     }
 
@@ -76,22 +77,25 @@ public class AuthService {
                         throw createInvalidCredentialsOrRefreshTokenException();
                     }
                     var user = account.get();
-                    return issueAccessJwtAndPersistRefreshTokenHash(user, repository.createAuthSession(user.id()), null);
+                    var session = repository.saveAndFlush(new AuthSession(users.getReferenceById(user.id())));
+                    return issueAccessJwtAndPersistRefreshTokenHash(user, session.id(), null);
                 });
     }
 
     public AuthDtos.Tokens rotateRefreshTokenOrRevokeSessionOnReuse(String raw) {
         String hash = computeRefreshTokenSha256Hash(raw);
-        var found = repository.findRefreshTokenByHash(hash).orElseThrow(AuthService::createInvalidCredentialsOrRefreshTokenException);
+        var found = refreshTokens.findRefreshTokenByHash(hash).orElseThrow(AuthService::createInvalidCredentialsOrRefreshTokenException);
         // Failure is returned from the transaction so reuse revocation commits before the 401.
         var tokens =
                 transaction.execute(
                         status -> {
+                            // Every rotation locks the same family row, so concurrent requests
+                            // cannot both consume one refresh token and create valid successors.
                             var session = repository.lockAndGetAuthSession(found.sessionId());
                             var token =
-                                    repository.findRefreshTokenByHash(hash).orElseThrow(AuthService::createInvalidCredentialsOrRefreshTokenException);
+                                    refreshTokens.findRefreshTokenByHash(hash).orElseThrow(AuthService::createInvalidCredentialsOrRefreshTokenException);
                             if (token.usedAt() != null) {
-                                repository.revokeAuthSessionAndAllRefreshTokens(session.id());
+                                revokeAuthSessionAndAllRefreshTokens(session.id());
                                 return null;
                             }
                             var user =
@@ -104,7 +108,7 @@ public class AuthService {
                                     || user.locked()) {
                                 return null;
                             }
-                            repository.markRefreshTokenUsed(token.id());
+                            refreshTokens.markRefreshTokenUsed(token.id());
                             repository.updateAuthSessionLastSeenAt(session.id());
                             return issueAccessJwtAndPersistRefreshTokenHash(user, session.id(), token.id());
                         });
@@ -115,6 +119,7 @@ public class AuthService {
     }
 
     public void revokeCurrentAuthSessionAndRefreshTokens() {
+        // Logout revokes the refresh family; an already-issued access JWT expires naturally.
         UUID sessionId = UUID.fromString(access.requireJwtAuthentication().getToken().getClaimAsString("sid"));
         transaction.executeWithoutResult(
                 status -> {
@@ -122,7 +127,7 @@ public class AuthService {
                     if (session.userId() != access.getAuthenticatedUserId()) {
                         throw createInvalidCredentialsOrRefreshTokenException();
                     }
-                    repository.revokeAuthSessionAndAllRefreshTokens(sessionId);
+                    revokeAuthSessionAndAllRefreshTokens(sessionId);
                 });
     }
 
@@ -137,12 +142,16 @@ public class AuthService {
     }
 
     private AuthDtos.Tokens issueAccessJwtAndPersistRefreshTokenHash(UserAccount user, UUID sessionId, UUID parentId) {
+        // Only the hash reaches storage; the random 48-byte credential is returned once to its owner.
         byte[] bytes = new byte[48];
         random.nextBytes(bytes);
         String refresh = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
         Instant now = Instant.now();
         Instant expiry = now.plus(accessTtl);
-        repository.insertRefreshTokenHash(sessionId, parentId, computeRefreshTokenSha256Hash(refresh), now.plus(refreshTtl));
+        refreshTokens.saveAndFlush(new AuthRefreshToken(repository.getReferenceById(sessionId),
+                parentId, computeRefreshTokenSha256Hash(refresh), now.plus(refreshTtl)));
+        // JWT claims are signed, not encrypted. Keep secrets out; sub is identity and av
+        // invalidates old access tokens after account/role changes. TTL bounds their lifetime.
         var claims =
                 JwtClaimsSet.builder()
                         .issuer(issuer)
@@ -161,6 +170,11 @@ public class AuthService {
                                         JwsHeader.with(MacAlgorithm.HS256).build(), claims))
                         .getTokenValue();
         return new AuthDtos.Tokens(jwt, "Bearer", expiry, refresh);
+    }
+
+    private void revokeAuthSessionAndAllRefreshTokens(UUID sessionId) {
+        repository.revokeSession(sessionId);
+        refreshTokens.revokeSessionTokens(sessionId);
     }
 
     static String computeRefreshTokenSha256Hash(String raw) {

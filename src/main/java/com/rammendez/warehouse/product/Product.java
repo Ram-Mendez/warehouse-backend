@@ -36,6 +36,8 @@ public class Product {
     @Column(nullable = false)
     boolean active;
 
+    // Hibernate checks this version in UPDATE statements so concurrent edits
+    // fail instead of silently overwriting a newer product.
     @Version
     @Column(nullable = false)
     Long version;

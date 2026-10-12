@@ -1,151 +1,61 @@
 package com.rammendez.warehouse.purchase;
 
 import com.rammendez.warehouse.common.*;
-
-import org.springframework.jdbc.core.*;
-import org.springframework.stereotype.Repository;
-
+import jakarta.persistence.LockModeType;
+import org.springframework.data.domain.*;
+import org.springframework.data.jpa.repository.*;
 import java.util.*;
 
-@Repository
-public class PurchaseRepository {
-    private final JdbcTemplate jdbc;
-    private static final RowMapper<PurchaseDtos.Response> HEADER =
-            (r, n) ->
-                    new PurchaseDtos.Response(
-                            r.getObject("id", UUID.class),
-                            r.getString("order_number"),
-                            r.getLong("supplier_id"),
-                            r.getLong("target_warehouse_id"),
-                            PurchaseStatus.valueOf(r.getString("status")),
-                            r.getLong("created_by"),
-                            r.getLong("version"),
-                            Sql.readNullableInstant(r, "created_at"),
-                            List.of());
+public interface PurchaseRepository extends JpaRepository<PurchaseOrder, UUID>, PurchaseWrites {
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select p from PurchaseOrder p where p.id = :id")
+    Optional<PurchaseOrder> findLockedById(UUID id);
 
-    public PurchaseRepository(JdbcTemplate jdbc) {
-        this.jdbc = jdbc;
+    @Query("select l from PurchaseOrderLine l where l.purchase.id = :id order by l.id")
+    List<PurchaseOrderLine> findLines(UUID id);
+
+    default PurchaseDtos.Response getPurchaseOrderWithLinesAndOptionalLock(UUID id, boolean lock) {
+        var purchase = (lock ? findLockedById(id) : findById(id))
+                .orElseThrow(() -> BusinessException.missing("Purchase order"));
+        return purchase.response(findLines(id).stream().map(PurchaseOrderLine::response).toList());
     }
 
-    public PurchaseDtos.Response getPurchaseOrderWithLinesAndOptionalLock(UUID id, boolean lock) {
-        var header =
-                Sql.firstRowOrThrowNotFound(
-                        jdbc.query(
-                                "select * from purchase_order where id=?"
-                                        + (lock ? " for update" : ""),
-                                HEADER,
-                                id),
-                        "Purchase order");
-        var lines =
-                jdbc.query(
-                        "select * from purchase_order_line where purchase_order_id=? order by id",
-                        (r, n) ->
-                                new PurchaseDtos.Line(
-                                        r.getLong("id"),
-                                        r.getLong("product_id"),
-                                        r.getBigDecimal("ordered_quantity"),
-                                        r.getBigDecimal("received_quantity"),
-                                        r.getBigDecimal("unit_cost")),
-                        id);
-        return new PurchaseDtos.Response(
-                header.id(),
-                header.orderNumber(),
-                header.supplierId(),
-                header.warehouseId(),
-                header.status(),
-                header.createdBy(),
-                header.version(),
-                header.createdAt(),
-                lines);
+    default UUID insertDraftPurchaseOrder(PurchaseDtos.Input input, long actor) {
+        var purchase = new PurchaseOrder();
+        purchase.id = UUID.randomUUID();
+        purchase.orderNumber = input.orderNumber().trim();
+        purchase.supplierId = input.supplierId();
+        purchase.warehouseId = input.warehouseId();
+        purchase.status = PurchaseStatus.DRAFT;
+        purchase.createdBy = actor;
+        return saveAndFlush(purchase).id;
     }
 
-    public UUID insertDraftPurchaseOrder(PurchaseDtos.Input input, long actor) {
-        UUID id = UUID.randomUUID();
-        jdbc.update(
-                "insert into"
-                        + " purchase_order(id,order_number,supplier_id,target_warehouse_id,status,created_by)"
-                        + " values (?,?,?,?,'DRAFT',?)",
-                id,
-                input.orderNumber().trim(),
-                input.supplierId(),
-                input.warehouseId(),
-                actor);
-        return id;
+    default void updatePurchaseOrderStatusAndAdvanceVersion(UUID id, PurchaseStatus status) {
+        var purchase = findById(id).orElseThrow(() -> BusinessException.missing("Purchase order"));
+        purchase.changeStatus(status);
+        saveAndFlush(purchase);
     }
 
-    public void insertPurchaseOrderLine(UUID id, PurchaseDtos.LineInput input) {
-        jdbc.update(
-                "insert into"
-                        + " purchase_order_line(purchase_order_id,product_id,ordered_quantity,unit_cost)"
-                        + " values (?,?,?,?)",
-                id,
-                input.productId(),
-                input.quantity(),
-                input.unitCost());
-    }
-
-    public void updatePurchaseOrderStatusAndAdvanceVersion(UUID id, PurchaseStatus status) {
-        jdbc.update(
-                "update purchase_order set status=?,version=version+1 where id=?",
-                status.name(),
-                id);
-    }
-
-    public void markPurchaseOrderApprovedWithActor(UUID id, long actor) {
-        jdbc.update(
-                "update purchase_order set"
-                        + " status='APPROVED',approved_by=?,approved_at=now(),version=version+1 where"
-                        + " id=?",
-                actor,
-                id);
-    }
-
-    public void markAllPurchaseLinesAndOrderReceived(UUID id) {
-        jdbc.update(
-                "update purchase_order_line set received_quantity=ordered_quantity where"
-                        + " purchase_order_id=?",
-                id);
+    default void markAllPurchaseLinesAndOrderReceived(UUID id) {
+        findLines(id).forEach(line -> line.receivedQuantity = line.orderedQuantity);
         updatePurchaseOrderStatusAndAdvanceVersion(id, PurchaseStatus.RECEIVED);
     }
 
-    public PageResponse<PurchaseDtos.Summary> listPurchaseOrdersWithinUserScope(
+    @Query("""
+            select p from PurchaseOrder p
+            where exists (select 1 from WarehouseScope s
+                          where s.userId = :actor and s.warehouseId = p.warehouseId)
+              and (:warehouseId is null or p.warehouseId = :warehouseId)
+              and (:status is null or p.status = :status)
+            order by p.createdAt desc, p.id
+            """)
+    Page<PurchaseOrder> findScopedOrders(long actor, Long warehouseId, PurchaseStatus status, Pageable pageable);
+
+    default PageResponse<PurchaseDtos.Summary> listPurchaseOrdersWithinUserScope(
             long actor, Long warehouseId, PurchaseStatus status, int page, int size) {
-        int offset = PageResponse.validatePageBoundsAndCalculateOffset(page, size);
-        String where =
-                " from purchase_order p join security_user_warehouse_scope s on"
-                        + " s.warehouse_id=p.target_warehouse_id where s.user_id=?";
-        var args = new ArrayList<Object>();
-        args.add(actor);
-        if (warehouseId != null) {
-            where += " and p.target_warehouse_id=?";
-            args.add(warehouseId);
-        }
-        if (status != null) {
-            where += " and p.status=?";
-            args.add(status.name());
-        }
-        long count = jdbc.queryForObject("select count(*)" + where, Long.class, args.toArray());
-        args.add(size);
-        args.add(offset);
-        var headers =
-                jdbc.query(
-                        "select p.*" + where + " order by p.created_at desc,p.id limit ? offset ?",
-                        HEADER,
-                        args.toArray());
-        var summaries =
-                headers.stream()
-                        .map(
-                                header ->
-                                        new PurchaseDtos.Summary(
-                                                header.id(),
-                                                header.orderNumber(),
-                                                header.supplierId(),
-                                                header.warehouseId(),
-                                                header.status(),
-                                                header.createdBy(),
-                                                header.version(),
-                                                header.createdAt()))
-                        .toList();
-        return new PageResponse<>(summaries, count, page, size);
+        PageResponse.validatePageBoundsAndCalculateOffset(page, size);
+        var result = findScopedOrders(actor, warehouseId, status, PageRequest.of(page, size));
+        return new PageResponse<>(result.stream().map(PurchaseOrder::summary).toList(), result.getTotalElements(), page, size);
     }
 }

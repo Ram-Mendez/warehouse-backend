@@ -1,119 +1,140 @@
 package com.rammendez.warehouse.inventory;
 
-import com.rammendez.warehouse.common.*;
-
-import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
-import org.springframework.stereotype.Repository;
-
+import com.rammendez.warehouse.common.BusinessException;
+import com.rammendez.warehouse.common.PageResponse;
+import jakarta.persistence.LockModeType;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.jpa.repository.*;
+import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.Instant;
-import java.util.HashMap;
+import java.util.Optional;
 
-@Repository
-public class InventoryRepository {
-    public record Balance(
-            long productId,
-            long warehouseId,
-            long locationId,
-            BigDecimal quantity,
-            BigDecimal reservedQuantity,
-            BigDecimal availableQuantity,
-            long version,
-            Instant updatedAt) {}
+public interface InventoryRepository extends JpaRepository<InventoryBalance, Long> {
+    // PostgreSQL's conflict handling serializes concurrent creation of the same stock key.
+    @Modifying
+    @Query(value = """
+            insert into inventory_balance(product_id, warehouse_location_id)
+            values (:productId, :locationId)
+            on conflict(product_id, warehouse_location_id) do nothing
+            """, nativeQuery = true)
+    void createInventoryBalanceIfMissing(long productId, long locationId);
 
-    private final JdbcTemplate jdbc;
-    private final NamedParameterJdbcTemplate named;
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select b from InventoryBalance b where b.productId = :productId and b.locationId = :locationId")
+    Optional<InventoryBalance> lockBalance(long productId, long locationId);
 
-    public InventoryRepository(JdbcTemplate jdbc, NamedParameterJdbcTemplate named) {
-        this.jdbc = jdbc;
-        this.named = named;
+    default BigDecimal lockInventoryBalanceAndGetAvailableQuantity(long productId, long locationId) {
+        var balance = lockBalance(productId, locationId).orElseThrow(() -> BusinessException.missing("Inventory balance"));
+        return balance.quantity.subtract(balance.reservedQuantity);
     }
 
-    public void createInventoryBalanceIfMissing(long productId, long locationId) {
-        jdbc.update(
-                "insert into inventory_balance(product_id,warehouse_location_id) values (?,?) on"
-                        + " conflict(product_id,warehouse_location_id) do nothing",
-                productId,
-                locationId);
+    // Bulk arithmetic preserves the original atomic increment, including a zero delta.
+    // Flush and clear prevent managed balances from retaining an obsolete quantity/version;
+    // PostgreSQL row locks remain held until the surrounding service transaction completes.
+    @Transactional
+    @Modifying(flushAutomatically = true, clearAutomatically = true)
+    @Query("""
+            update InventoryBalance b
+            set b.quantity = b.quantity + :delta, b.version = b.version + 1, b.updatedAt = instant
+            where b.productId = :productId and b.locationId = :locationId
+            """)
+    void applyQuantityDeltaAndAdvanceBalanceVersion(long productId, long locationId, BigDecimal delta);
+
+    interface StockTotals {
+        BigDecimal getQuantity();
+        BigDecimal getReservedQuantity();
     }
 
-    public BigDecimal lockInventoryBalanceAndGetAvailableQuantity(long productId, long locationId) {
-        return jdbc.queryForObject(
-                "select quantity-reserved_quantity from inventory_balance where product_id=? and"
-                        + " warehouse_location_id=? for update",
-                BigDecimal.class,
-                productId,
-                locationId);
+    @Query("""
+            select coalesce(sum(b.quantity), 0) as quantity,
+                   coalesce(sum(b.reservedQuantity), 0) as reservedQuantity
+            from InventoryBalance b join WarehouseLocation l on l.id = b.locationId
+            where l.warehouse.id = :warehouseId and b.productId = :productId
+            """)
+    StockTotals sumStock(long warehouseId, long productId);
+
+    default InventoryDtos.Stock sumProductStockAcrossWarehouseLocations(long warehouseId, long productId) {
+        var totals = sumStock(warehouseId, productId);
+        return new InventoryDtos.Stock(warehouseId, productId, totals.getQuantity(),
+                totals.getReservedQuantity(), totals.getQuantity().subtract(totals.getReservedQuantity()));
     }
 
-    public void applyQuantityDeltaAndAdvanceBalanceVersion(long productId, long locationId, BigDecimal delta) {
-        jdbc.update(
-                "update inventory_balance set"
-                    + " quantity=quantity+?,version=version+1,updated_at=now() where product_id=?"
-                    + " and warehouse_location_id=?",
-                delta,
-                productId,
-                locationId);
+    interface BalanceView {
+        long getProductId();
+        long getWarehouseId();
+        long getLocationId();
+        BigDecimal getQuantity();
+        BigDecimal getReservedQuantity();
+        long getVersion();
+        Instant getUpdatedAt();
     }
 
-    public InventoryService.Stock sumProductStockAcrossWarehouseLocations(long warehouseId, long productId) {
-        return jdbc.queryForObject(
-                "select coalesce(sum(b.quantity),0) quantity,coalesce(sum(b.reserved_quantity),0)"
-                        + " reserved from inventory_balance b join warehouse_location l on"
-                        + " l.id=b.warehouse_location_id where l.warehouse_id=? and b.product_id=?",
-                (r, n) ->
-                        new InventoryService.Stock(
-                                warehouseId,
-                                productId,
-                                r.getBigDecimal("quantity"),
-                                r.getBigDecimal("reserved"),
-                                r.getBigDecimal("quantity").subtract(r.getBigDecimal("reserved"))),
-                warehouseId,
-                productId);
-    }
+    @Query("""
+            select b.productId as productId, l.warehouse.id as warehouseId,
+                   l.id as locationId, b.quantity as quantity, b.reservedQuantity as reservedQuantity,
+                   b.version as version, b.updatedAt as updatedAt
+            from InventoryBalance b join WarehouseLocation l on l.id = b.locationId
+            where exists (select 1 from WarehouseScope s
+                          where s.warehouseId = l.warehouse.id and s.userId = :userId)
+              and (:warehouseId is null or l.warehouse.id = :warehouseId)
+              and (:productId is null or b.productId = :productId)
+            order by l.warehouse.id, b.productId, l.id
+            """)
+    Page<BalanceView> findScopedBalances(long userId, Long warehouseId, Long productId, Pageable pageable);
 
-    public PageResponse<Balance> listInventoryBalancesWithinUserScope(
+    default PageResponse<InventoryDtos.Balance> listInventoryBalancesWithinUserScope(
             long userId, Long warehouseId, Long productId, int page, int size) {
-        int offset = PageResponse.validatePageBoundsAndCalculateOffset(page, size);
-        var params = new HashMap<String, Object>();
-        params.put("user", userId);
-        String where =
-                " from inventory_balance b join warehouse_location l on"
-                        + " l.id=b.warehouse_location_id"
-                        + " where exists(select 1 from security_user_warehouse_scope s"
-                        + " where s.warehouse_id=l.warehouse_id"
-                        + " and s.user_id=:user)";
+        PageResponse.validatePageBoundsAndCalculateOffset(page, size);
+        var result = findScopedBalances(userId, warehouseId, productId, PageRequest.of(page, size));
+        return new PageResponse<>(result.stream().map(b -> new InventoryDtos.Balance(
+                b.getProductId(), b.getWarehouseId(), b.getLocationId(), b.getQuantity(),
+                b.getReservedQuantity(), b.getQuantity().subtract(b.getReservedQuantity()),
+                b.getVersion(), b.getUpdatedAt())).toList(), result.getTotalElements(), page, size);
+    }
 
-        if (warehouseId != null) {
-            where += " and l.warehouse_id=:warehouse";
-            params.put("warehouse", warehouseId);
-        }
-        if (productId != null) {
-            where += " and b.product_id=:product";
-            params.put("product", productId);
-        }
-        long count = named.queryForObject("select count(*)" + where, params, Long.class);
-        params.put("size", size);
-        params.put("offset", offset);
-        var content =
-                named.query(
-                        "select b.*,l.warehouse_id"
-                                + where
-                                + " order by l.warehouse_id,b.product_id,l.id limit :size offset"
-                                + " :offset",
-                        params,
-                        (r, n) ->
-                                new Balance(
-                                        r.getLong("product_id"),
-                                        r.getLong("warehouse_id"),
-                                        r.getLong("warehouse_location_id"),
-                                        r.getBigDecimal("quantity"),
-                                        r.getBigDecimal("reserved_quantity"),
-                                        r.getBigDecimal("quantity")
-                                                .subtract(r.getBigDecimal("reserved_quantity")),
-                                        r.getLong("version"),
-                                        Sql.readNullableInstant(r, "updated_at")));
-        return new PageResponse<>(content, count, page, size);
+    interface ShortageView {
+        long getProductId();
+        BigDecimal getMinimumStock();
+        BigDecimal getPhysicalStock();
+        BigDecimal getReservedStock();
+        BigDecimal getAvailableStock();
+        BigDecimal getShortage();
+    }
+
+    String SHORTAGE_FILTER = """
+            from product p
+            left join (
+                select b.product_id, sum(b.quantity) as physical,
+                       sum(b.reserved_quantity) as reserved,
+                       sum(b.quantity - b.reserved_quantity) as available
+                from inventory_balance b
+                join warehouse_location l on l.id = b.warehouse_location_id
+                where l.warehouse_id = :warehouseId
+                group by b.product_id
+            ) s on s.product_id = p.id
+            where p.active = true and coalesce(s.available, 0) < p.minimum_stock
+              and (cast(:categoryId as bigint) is null or p.category_id = :categoryId)
+            """;
+
+    @Query(value = """
+            select p.id as productId, p.minimum_stock as minimumStock,
+                   coalesce(s.physical, 0) as physicalStock,
+                   coalesce(s.reserved, 0) as reservedStock,
+                   coalesce(s.available, 0) as availableStock,
+                   p.minimum_stock - coalesce(s.available, 0) as shortage
+            """ + SHORTAGE_FILTER + " order by shortage desc, p.id",
+            countQuery = "select count(*) " + SHORTAGE_FILTER, nativeQuery = true)
+    Page<ShortageView> findShortages(long warehouseId, Long categoryId, Pageable pageable);
+
+    default PageResponse<InventoryDtos.ProductShortage> getProductsShortage(
+            long warehouseId, Long categoryId, int page, int size) {
+        PageResponse.validatePageBoundsAndCalculateOffset(page, size);
+        var result = findShortages(warehouseId, categoryId, PageRequest.of(page, size));
+        return new PageResponse<>(result.stream().map(s -> new InventoryDtos.ProductShortage(
+                s.getProductId(), s.getMinimumStock(), s.getPhysicalStock(), s.getReservedStock(),
+                s.getAvailableStock(), s.getShortage())).toList(), result.getTotalElements(), page, size);
     }
 }

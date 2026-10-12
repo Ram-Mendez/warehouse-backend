@@ -1,87 +1,38 @@
 package com.rammendez.warehouse.auth;
 
-import com.rammendez.warehouse.common.Sql;
-
-import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.stereotype.Repository;
-
-import java.time.Instant;
+import com.rammendez.warehouse.common.BusinessException;
+import jakarta.persistence.LockModeType;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
 import java.util.Optional;
 import java.util.UUID;
 
-@Repository
-public class AuthRepository {
-    public record Session(UUID id, long userId, Instant revokedAt) {}
+public interface AuthRepository extends JpaRepository<AuthSession, UUID> {
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select s from AuthSession s where s.id = :sessionId")
+    Optional<AuthSession> findAndLockById(UUID sessionId);
 
-    public record RefreshToken(
-            UUID id, UUID sessionId, Instant expiresAt, Instant usedAt, Instant revokedAt) {}
-
-    private final JdbcTemplate jdbc;
-
-    public AuthRepository(JdbcTemplate jdbc) {
-        this.jdbc = jdbc;
+    default AuthSession lockAndGetAuthSession(UUID sessionId) {
+        return findAndLockById(sessionId).orElseThrow(() -> BusinessException.missing("Session"));
     }
 
-    public UUID createAuthSession(long userId) {
-        UUID id = UUID.randomUUID();
-        jdbc.update("insert into auth_session(id,user_id) values (?,?)", id, userId);
-        return id;
-    }
+    @Modifying(flushAutomatically = true)
+    @Query("update AuthSession s set s.lastSeenAt = current_timestamp where s.id = :id")
+    void updateAuthSessionLastSeenAt(UUID id);
 
-    public Session lockAndGetAuthSession(UUID sessionId) {
-        return Sql.firstRowOrThrowNotFound(
-                jdbc.query(
-                        "select * from auth_session where id=? for update",
-                        (r, n) ->
-                                new Session(
-                                        r.getObject("id", UUID.class),
-                                        r.getLong("user_id"),
-                                        Sql.readNullableInstant(r, "revoked_at")),
-                        sessionId),
-                "Session");
-    }
+    @Modifying(flushAutomatically = true)
+    @Query("""
+            update AuthSession s set s.revokedAt = coalesce(s.revokedAt, current_timestamp)
+            where s.id = :id
+            """)
+    void revokeSession(UUID id);
 
-    public Optional<RefreshToken> findRefreshTokenByHash(String hash) {
-        return jdbc
-                .query(
-                        "select * from auth_refresh_token where token_hash=?",
-                        (r, n) ->
-                                new RefreshToken(
-                                        r.getObject("id", UUID.class),
-                                        r.getObject("session_id", UUID.class),
-                                        Sql.readNullableInstant(r, "expires_at"),
-                                        Sql.readNullableInstant(r, "used_at"),
-                                        Sql.readNullableInstant(r, "revoked_at")),
-                        hash)
-                .stream()
-                .findFirst();
-    }
-
-    public void insertRefreshTokenHash(UUID sessionId, UUID parentId, String hash, Instant expiry) {
-        jdbc.update(
-                "insert into"
-                        + " auth_refresh_token(id,session_id,parent_token_id,token_hash,expires_at)"
-                        + " values (?,?,?,?,?)",
-                UUID.randomUUID(),
-                sessionId,
-                parentId,
-                hash,
-                java.sql.Timestamp.from(expiry));
-    }
-
-    public void markRefreshTokenUsed(UUID id) {
-        jdbc.update("update auth_refresh_token set used_at=now() where id=?", id);
-    }
-
-    public void updateAuthSessionLastSeenAt(UUID id) {
-        jdbc.update("update auth_session set last_seen_at=now() where id=?", id);
-    }
-
-    public void revokeAuthSessionAndAllRefreshTokens(UUID id) {
-        jdbc.update("update auth_session set revoked_at=coalesce(revoked_at,now()) where id=?", id);
-        jdbc.update(
-                "update auth_refresh_token set revoked_at=coalesce(revoked_at,now()) where"
-                        + " session_id=?",
-                id);
-    }
+    @Modifying(flushAutomatically = true)
+    @Query("""
+            update AuthSession s set s.revokedAt = coalesce(s.revokedAt, current_timestamp)
+            where s.user.id = :userId
+            """)
+    void revokeAllUserSessions(long userId);
 }

@@ -1,18 +1,19 @@
 package com.rammendez.warehouse.audit;
 
 import com.rammendez.warehouse.security.AccessControl;
-
-import org.springframework.jdbc.core.JdbcTemplate;
+import jakarta.persistence.EntityManager;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 @Service
 public class AuditService {
-    private final JdbcTemplate jdbc;
+    private final EntityManager entityManager;
+    private final AuditRepository repository;
     private final AccessControl access;
 
-    public AuditService(JdbcTemplate jdbc, AccessControl access) {
-        this.jdbc = jdbc;
+    public AuditService(EntityManager entityManager, AuditRepository repository, AccessControl access) {
+        this.entityManager = entityManager;
+        this.repository = repository;
         this.access = access;
     }
 
@@ -20,58 +21,38 @@ public class AuditService {
         if (!TransactionSynchronizationManager.isActualTransactionActive()) {
             throw new IllegalStateException("Audit actor requires transaction");
         }
-        jdbc.queryForObject(
-                "select set_config('app.current_user_id',?,true)",
-                String.class,
-                Long.toString(access.getAuthenticatedUserId()));
+        // Native JPA runs on the same transaction/connection as Hibernate's ledger flushes.
+        // true prevents the actor identity from leaking through the connection pool.
+        entityManager.createNativeQuery("select set_config('app.current_user_id', :actor, true)", String.class)
+                .setParameter("actor", Long.toString(access.getAuthenticatedUserId())).getSingleResult();
     }
 
     public void recordAuditEventWithActorAndWarehouseReferences(String type, String entity, Object id) {
-        Long warehouse = null;
-        Long related = null;
+        var event = new AuditEvent();
+        event.actorUserId = access.getAuthenticatedUserId();
+        event.eventType = type;
+        event.entityType = entity;
+        event.entityId = id.toString();
         switch (entity) {
-            case "warehouse" -> warehouse = Long.valueOf(id.toString());
-            case "warehouse_location" ->
-                    warehouse =
-                            jdbc.queryForObject(
-                                    "select warehouse_id from warehouse_location where id=?",
-                                    Long.class,
-                                    id);
-            case "purchase_order" ->
-                    warehouse =
-                            jdbc.queryForObject(
-                                    "select target_warehouse_id from purchase_order where id=?",
-                                    Long.class,
-                                    id);
+            case "warehouse" -> event.warehouseId = Long.valueOf(id.toString());
+            case "warehouse_location" -> event.warehouseId = entityManager.createQuery(
+                    "select l.warehouse.id from WarehouseLocation l where l.id = :id", Long.class)
+                    .setParameter("id", id).getSingleResult();
+            case "purchase_order" -> event.warehouseId = entityManager.createQuery(
+                    "select p.warehouseId from PurchaseOrder p where p.id = :id", Long.class)
+                    .setParameter("id", id).getSingleResult();
             case "stock_movement", "transfer" -> {
-                String field = entity.equals("transfer") ? "transfer_group_id" : "id";
-                var rows =
-                        jdbc.query(
-                                "select source_warehouse_id,target_warehouse_id from stock_movement"
-                                        + " where "
-                                        + field
-                                        + "=? limit 1",
-                                (r, n) ->
-                                        new Long[] {
-                                            r.getObject(1, Long.class), r.getObject(2, Long.class)
-                                        },
-                                id);
+                String predicate = entity.equals("transfer") ? "m.transferGroupId = :id" : "m.id = :id";
+                var rows = entityManager.createQuery(
+                        "select m.sourceWarehouseId, m.targetWarehouseId from StockMovement m where " + predicate,
+                        Object[].class).setParameter("id", id).setMaxResults(1).getResultList();
                 if (!rows.isEmpty()) {
-                    warehouse = rows.getFirst()[0];
-                    related = rows.getFirst()[1];
+                    event.warehouseId = (Long) rows.getFirst()[0];
+                    event.relatedWarehouseId = (Long) rows.getFirst()[1];
                 }
             }
             default -> {}
         }
-        jdbc.update(
-                "insert into"
-                    + " audit_event(actor_user_id,event_type,entity_type,entity_id,warehouse_id,related_warehouse_id)"
-                    + " values (?,?,?,?,?,?)",
-                access.getAuthenticatedUserId(),
-                type,
-                entity,
-                id.toString(),
-                warehouse,
-                related);
+        repository.saveAndFlush(event);
     }
 }

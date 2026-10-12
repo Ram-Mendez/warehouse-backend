@@ -25,7 +25,12 @@ public class ContactService {
 
     @Transactional
     public ContactDtos.Accepted submitContactMessageAndReturnAcknowledgement(ContactDtos.Input input) {
-        var message = repository.getContactMessage(repository.insert(input));
+        var entity = new ContactMessage();
+        entity.name = input.name().trim();
+        entity.email = input.email();
+        entity.subject = input.subject().trim();
+        entity.message = input.message();
+        var message = repository.saveAndFlush(entity).toResponse();
         return new ContactDtos.Accepted(message.id(), message.status(), message.createdAt());
     }
 
@@ -43,7 +48,7 @@ public class ContactService {
     @PreAuthorize("hasAuthority('PERM_CONTACT_MANAGE')")
     public ContactDtos.Response updateContactMessageStatusAndAssignActor(UUID id, ContactDtos.Status status) {
         repository.getContactMessage(id);
-        repository.updateContactMessageStatusAndAssignActor(id, status, access.getAuthenticatedUserId());
+        repository.updateStatus(id, status, access.getAuthenticatedUserId(), status == ContactDtos.Status.RESOLVED);
         audit.recordAuditEventWithActorAndWarehouseReferences("CONTACT_STATUS_CHANGED", "contact_message", id);
         return repository.getContactMessage(id);
     }

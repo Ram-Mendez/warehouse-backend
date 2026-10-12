@@ -54,6 +54,8 @@ public class MovementService {
         this.audit = audit;
     }
 
+    // Stock, ledger lines and database/application audits share one commit boundary.
+    // Unchecked failures roll the entire operation back, including trigger writes.
     @Transactional
     @PreAuthorize("hasAuthority('PERM_STOCK_RECEIVE')")
     public MovementDtos.Response receiveStockAndPostReceiptMovement(MovementDtos.StockInput input) {
@@ -292,6 +294,8 @@ public class MovementService {
     }
 
     private MovementDtos.Result validateLockApplyAndPostStockMovementPlans(List<Plan> plans) {
+        // Every operation locks balances in location/product order, including opposite transfers.
+        // Consistent ordering avoids a cycle where each transaction waits for the other's lock.
         Map<StockKey, BigDecimal> deltas = new TreeMap<>();
         for (var plan : plans) {
             if (plan.source() != null) {
