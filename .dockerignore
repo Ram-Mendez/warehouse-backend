@@ -1,0 +1,11 @@
+.git
+.codex
+.idea
+target
+docs
+training
+*.log
+.env
+.env.*
+*.pem
+*.key

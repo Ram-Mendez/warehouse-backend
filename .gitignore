@@ -1,5 +1,13 @@
 HELP.md
 target/
+*.log
+.env
+.env.*
+!.env.example
+
+### Local Codex conversation exports ###
+/codex-*.json
+/codex-*.jsonl
 .mvn/wrapper/maven-wrapper.jar
 !**/src/main/**/target/
 !**/src/test/**/target/
