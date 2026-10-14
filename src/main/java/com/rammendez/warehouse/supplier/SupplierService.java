@@ -21,7 +21,7 @@ public class SupplierService {
     @PreAuthorize("hasAuthority('PERM_SUPPLIER_READ')")
     public PageResponse<SupplierDtos.Response> list(int page, int size) {
         PageResponse.validatePageBoundsAndCalculateOffset(page, size);
-        return repository.list(0, size);
+        return repository.list(page, size);
     }
 
     @PreAuthorize("hasAuthority('PERM_SUPPLIER_READ')")
@@ -49,13 +49,12 @@ public class SupplierService {
         audit.recordAuditEventWithActorAndWarehouseReferences("SUPPLIER_UPDATED", "supplier", id);
         return repository.getSupplier(id);
     }
+
     private void applyInput(Supplier supplier, SupplierDtos.Input input) {
         supplier.code = input.code().trim();
         supplier.name = input.name().trim();
         supplier.email = input.email();
-        if (supplier.id == null) {
-            supplier.phone = input.phone();
-        }
+        supplier.phone = input.phone();
         supplier.active = input.active();
     }
 }
